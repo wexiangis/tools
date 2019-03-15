@@ -85,6 +85,70 @@ void screen_duplex_pclose(DuplexPipe *dp)
 
 //========== wlan维护 ==========
 
+#define SHELL_WIFI_START  "/etc/wpa_supplicant/start.sh"
+/*
+#!/bin/sh
+
+#insmod nl80211
+
+if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null
+then
+    echo "wpa_supplicant is already running"
+else
+    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant/wpa_supplicant.conf -B
+fi
+
+if ps | grep -v grep | grep udhcpc > /dev/null
+then
+    echo "udhcpc is already running"
+else
+    udhcpc -i wlan0 > /dev/null &
+fi
+*/
+
+#define SHELL_WIFI_STOP   "/etc/wpa_supplicant/stop.sh"
+/*
+#!/bin/sh
+killall udhcpc
+wpa_cli -iwlan0 terminate
+*/
+
+#define CMD_WPA_CLI     "wpa_cli -i wlan0"
+
+#define  WPA_CLI_CMD_LEN	512
+#define  WPA_CLI_RESULT_LEN	10240
+
+//wifi 扫描每新增一条网络就回调该函数,由用户自行处理新增的网络
+// typedef void (*ScanCallback)(void *object, char *name, int keyType, int power);
+
+typedef struct{
+	//----- wifi -----
+    //使用管道与wifi配置小工具 wpa_cli 保持交互
+    DuplexPipe wpa_cli;
+    //指令发/收
+    char cmd[WPA_CLI_CMD_LEN];
+    char cmdReady;//0/空闲 1/在编辑 2/允许发出
+	char cmdResult[WPA_CLI_RESULT_LEN];//接收缓冲区
+    char *cmdResultPoint;//在缓冲区中游走的指针
+    char cmdResultReady;//0/空闲 1/等待结果写入 2/正在写入 3/结束写入,由发指令者解析结果(解析完后务必置0)
+    //扫描
+	bool scan;//在扫描中
+	int scanTimeout;
+	void *scanObject;
+    ScanCallback scanCallback;
+    //当前连接信息
+	int wifi_status;//0/无连接 1/在连接 2/获取ip 3/正常
+	char wifi_ssid[128];
+	char wifi_key[128];
+	char wifi_keyType;//0/无 1/WPA-PSK 2/WPA2-PSK
+	char wifi_ip[24];
+	char wifi_mac[24];
+	int wifi_freq;//当前连接网络 频段 0/无 24xx/2.4G 5xxx/5G
+	int wifi_power;//当前连接网络 信号强度 dbm
+	unsigned int wifi_rate;//网速 bytes/s
+	//----- ap -----
+}ScreenWlan_Struct;
+
 static ScreenWlan_Struct *wlan = NULL;
 
 //发指令
@@ -127,7 +191,7 @@ char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
 		//等待回复
 		wlan->cmdResultReady = 1;
 		i = 0;
-		while(wlan->cmdResultReady == 1)//等待
+		while(wlan->cmdResultReady != 2)//等待
 		{
 			view_delay_ms(100);
 			if(!wlan->scan || ++i > 50)//5秒超时
@@ -136,7 +200,9 @@ char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
 				return NULL;
 			}
 		}
+		view_delay_ms(500);
 		//匹配回复
+		wlan->cmdResultReady = 3;
 		if(strstr(wlan->cmdResult, expect))
 		{
 			wlan->cmdResultReady = 0;
@@ -300,18 +366,32 @@ void screen_wifi_disconnect(void)
 
 void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
 {
-    char buff[WPA_CLI_CMD_LEN];
+    char buff[1024];
     int ret;
     while(wlan->wpa_cli.run)
     {
-        memset(buff, 0, WPA_CLI_CMD_LEN);
-        ret = read(wlan->wpa_cli.fr, buff, WPA_CLI_CMD_LEN);//此处为阻塞读
+        memset(buff, 0, 1024);
+        ret = read(wlan->wpa_cli.fr, buff, 1024);//此处为阻塞读
         if(ret > 0)
         {
 			if(wlan->cmdResultReady == 1)
 			{
-				memcpy(wlan->cmdResult, buff, WPA_CLI_CMD_LEN);
+				//
+				memset(wlan->cmdResult, 0, WPA_CLI_RESULT_LEN);
+				wlan->cmdResultPoint = wlan->cmdResult;
+				//
+				memcpy(wlan->cmdResultPoint, buff, ret);
+				wlan->cmdResultPoint += ret;
+				//
 				wlan->cmdResultReady = 2;
+			}
+			else if(wlan->cmdResultReady == 2)
+			{
+				if(wlan->cmdResultPoint - wlan->cmdResult <= WPA_CLI_RESULT_LEN - ret)
+				{
+					memcpy(wlan->cmdResultPoint, buff, ret);
+					wlan->cmdResultPoint += ret;
+				}
 			}
 			else if(wlan->scan)
 			{
@@ -320,6 +400,8 @@ void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
 			}
 			//
 			printf("%s\n", buff);
+			//
+			continue;
         }
         else//检查子进程状态
         {
