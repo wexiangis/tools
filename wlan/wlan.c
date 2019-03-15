@@ -361,10 +361,17 @@ int wifi_status(void)
         printf("[status err !]\n");
         return -1;
     }
-	//
-	
+	//再此解析
 
     return 0;
+}
+
+//指令透传
+char *wifi_through(char *cmd)
+{
+    if(!wlan || !wlan->wpa_cli.run)
+        return NULL;
+    return _wpa_cli_cmd2(wlan, NULL, "%s\n", cmd);
 }
 
 void _thr_wpa_cli_read(Wlan_Struct *wlan)
