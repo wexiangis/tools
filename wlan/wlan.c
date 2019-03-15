@@ -36,51 +36,51 @@ void view_delay_ms(unsigned int ms)
 
 bool screen_duplex_popen(DuplexPipe *dp, const char *cmd)
 {
-	int fr[2], fw[2];// read, write
-	pid_t pid;
+    int fr[2], fw[2];// read, write
+    pid_t pid;
 
-	if(!dp || !cmd)
-		return false;
+    if(!dp || !cmd)
+        return false;
 
-	if(pipe(fr) < 0) return false;
-	if(pipe(fw) < 0) return false;
+    if(pipe(fr) < 0) return false;
+    if(pipe(fw) < 0) return false;
 
-	if((pid = fork()) < 0)
-		return false;
-	else if(pid == 0) //child process
-	{
-		close(fr[0]);
-		close(fw[1]);
-		if(dup2(fr[1], STDOUT_FILENO) != STDOUT_FILENO || 
-			dup2(fw[0], STDIN_FILENO) != STDIN_FILENO) //数据流重定向
-			fprintf(stderr, "dup2 err !");
-		close(fr[1]);
-		close(fw[0]);
-		execl("/bin/sh", "sh", "-c", cmd, (char *)0);
-		_exit(127);
-	}
+    if((pid = fork()) < 0)
+        return false;
+    else if(pid == 0) //child process
+    {
+        close(fr[0]);
+        close(fw[1]);
+        if(dup2(fr[1], STDOUT_FILENO) != STDOUT_FILENO || 
+            dup2(fw[0], STDIN_FILENO) != STDIN_FILENO) //数据流重定向
+            fprintf(stderr, "dup2 err !");
+        close(fr[1]);
+        close(fw[0]);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)0);
+        _exit(127);
+    }
 
-	close(fr[1]);
-	dp->fr = fr[0];
-	close(fw[0]);
-	dp->fw = fw[1];
+    close(fr[1]);
+    dp->fr = fr[0];
+    close(fw[0]);
+    dp->fw = fw[1];
 
-	dp->pid = pid;
-	dp->run = true;
+    dp->pid = pid;
+    dp->run = true;
 
-	return true;
+    return true;
 }
 
 void screen_duplex_pclose(DuplexPipe *dp)
 {
     if(dp && dp->run)
-	{
-		dp->run = false;
-		if(waitpid(dp->pid, NULL, WNOHANG|WUNTRACED) == 0)
-			kill(dp->pid, SIGKILL);
-		close(dp->fr); dp->fr = 0;
-		close(dp->fw); dp->fw = 0;
-	}
+    {
+        dp->run = false;
+        if(waitpid(dp->pid, NULL, WNOHANG|WUNTRACED) == 0)
+            kill(dp->pid, SIGKILL);
+        close(dp->fr); dp->fr = 0;
+        close(dp->fw); dp->fw = 0;
+    }
 }
 
 //========== wlan维护 ==========
@@ -115,38 +115,39 @@ wpa_cli -iwlan0 terminate
 
 #define CMD_WPA_CLI     "wpa_cli -i wlan0"
 
-#define  WPA_CLI_CMD_LEN	512
-#define  WPA_CLI_RESULT_LEN	10240
+#define  WPA_CLI_CMD_LEN    512
+#define  WPA_CLI_RESULT_LEN    10240
 
 //wifi 扫描每新增一条网络就回调该函数,由用户自行处理新增的网络
 // typedef void (*ScanCallback)(void *object, char *name, int keyType, int power);
 
 typedef struct{
-	//----- wifi -----
+    //----- wifi -----
     //使用管道与wifi配置小工具 wpa_cli 保持交互
     DuplexPipe wpa_cli;
     //指令发/收
     char cmd[WPA_CLI_CMD_LEN];
     char cmdReady;//0/空闲 1/在编辑 2/允许发出
-	char cmdResult[WPA_CLI_RESULT_LEN];//接收缓冲区
+    char cmdResult[WPA_CLI_RESULT_LEN];//接收缓冲区
     char *cmdResultPoint;//在缓冲区中游走的指针
     char cmdResultReady;//0/空闲 1/等待结果写入 2/正在写入 3/结束写入,由发指令者解析结果(解析完后务必置0)
     //扫描
-	bool scan;//在扫描中
-	int scanTimeout;
-	void *scanObject;
+    bool scan;//在扫描中
+    int scanTimeout;
+    void *scanObject;
     ScanCallback scanCallback;
     //当前连接信息
-	int wifi_status;//0/无连接 1/在连接 2/获取ip 3/正常
-	char wifi_ssid[128];
-	char wifi_key[128];
-	char wifi_keyType;//0/无 1/WPA-PSK 2/WPA2-PSK
-	char wifi_ip[24];
-	char wifi_mac[24];
-	int wifi_freq;//当前连接网络 频段 0/无 24xx/2.4G 5xxx/5G
-	int wifi_power;//当前连接网络 信号强度 dbm
-	unsigned int wifi_rate;//网速 bytes/s
-	//----- ap -----
+    int wifi_id;
+    int wifi_status;//0/无连接 1/在连接 2/获取ip 3/正常
+    char wifi_ssid[128];
+    char wifi_key[128];
+    char wifi_keyType;//0/无 1/WPA-PSK 2/WPA2-PSK
+    char wifi_ip[24];
+    char wifi_mac[24];
+    int wifi_freq;//当前连接网络 频段 0/无 24xx/2.4G 5xxx/5G
+    int wifi_power;//当前连接网络 信号强度 dbm
+    unsigned int wifi_rate;//网速 bytes/s
+    //----- ap -----
 }ScreenWlan_Struct;
 
 static ScreenWlan_Struct *wlan = NULL;
@@ -154,94 +155,94 @@ static ScreenWlan_Struct *wlan = NULL;
 //发指令
 bool _wpa_cli_cmd(ScreenWlan_Struct *wlan, char *cmd)
 {
-	if(wlan && wlan->wpa_cli.run && cmd)
-	{
-		//发指令
-		int i = 1;
-		while(wlan->cmdReady)//等待空闲
-		{
-			view_delay_ms(100);
-			if(!wlan->scan || ++i > 30)//3秒超时
-				return false;
-		}
-		wlan->cmdReady = 1;//在编辑
-		memset(wlan->cmd, 0, WPA_CLI_CMD_LEN);
-		strcpy(wlan->cmd, cmd);
-		wlan->cmdReady = 2;//发出
-		return true;
-	}
-	return false;
+    if(wlan && wlan->wpa_cli.run && cmd)
+    {
+        //发指令
+        int i = 1;
+        while(wlan->cmdReady)//等待空闲
+        {
+            view_delay_ms(100);
+            if(!wlan->wpa_cli.run || ++i > 30)//3秒超时
+                return false;
+        }
+        wlan->cmdReady = 1;//在编辑
+        memset(wlan->cmd, 0, WPA_CLI_CMD_LEN);
+        strcpy(wlan->cmd, cmd);
+        wlan->cmdReady = 2;//发出
+        return true;
+    }
+    return false;
 }
 
 //发指令,并等待期望返回 失败返回 NULL 成功返回 wlan->cmdResult 指针
 char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
 {
-	if(wlan && wlan->wpa_cli.run && expect)
-	{
-		int i = 0;
-		while(wlan->cmdResultReady)//等待空闲
-		{
-			view_delay_ms(100);
-			if(!wlan->scan || ++i > 30)//3秒超时
-				return NULL;
-		}
-		//发出指令
-		if(!_wpa_cli_cmd(wlan, cmd))
-			return NULL;
-		//等待回复
-		wlan->cmdResultReady = 1;
-		i = 0;
-		while(wlan->cmdResultReady != 2)//等待
-		{
-			view_delay_ms(100);
-			if(!wlan->scan || ++i > 50)//5秒超时
-			{
-				wlan->cmdResultReady = 0;
-				return NULL;
-			}
-		}
-		view_delay_ms(500);
-		//匹配回复
-		wlan->cmdResultReady = 3;
-		if(strstr(wlan->cmdResult, expect))
-		{
-			wlan->cmdResultReady = 0;
-			return wlan->cmdResult;
-		}
-		else
-		{
-			wlan->cmdResultReady = 0;
-			return NULL;
-		}
-	}
-	return NULL;
+    if(wlan && wlan->wpa_cli.run && expect)
+    {
+        int i = 0;
+        while(wlan->cmdResultReady)//等待空闲
+        {
+            view_delay_ms(100);
+            if(!wlan->wpa_cli.run || ++i > 30)//3秒超时
+                return NULL;
+        }
+        //发出指令
+        if(!_wpa_cli_cmd(wlan, cmd))
+            return NULL;
+        //等待回复
+        wlan->cmdResultReady = 1;
+        i = 0;
+        while(wlan->cmdResultReady != 2)//等待
+        {
+            view_delay_ms(100);
+            if(!wlan->wpa_cli.run || ++i > 50)//5秒超时
+            {
+                wlan->cmdResultReady = 0;
+                return NULL;
+            }
+        }
+        view_delay_ms(500);
+        //匹配回复
+        wlan->cmdResultReady = 3;
+        if(strstr(wlan->cmdResult, expect))
+        {
+            wlan->cmdResultReady = 0;
+            return wlan->cmdResult;
+        }
+        else
+        {
+            wlan->cmdResultReady = 0;
+            return NULL;
+        }
+    }
+    return NULL;
 }
 
 void _thr_wpa_cli_scan(ScreenWlan_Struct *wlan)
 {
-	wlan->scan = true;
-	_wpa_cli_cmd(wlan, "scan\n");//开始扫描
-	while(wlan->scan)
-	{
-		//发指令
-		_wpa_cli_cmd(wlan, "scan_result\n");//刷新结果
-		//延时
-		view_delay_ms(1000);
-		//倒计时
-		if(--wlan->scanTimeout < 1)
-			wlan->scan = false;
-	}
+    wlan->scan = true;
+    _wpa_cli_cmd(wlan, "scan\n");//开始扫描
+    while(wlan->scan)
+    {
+        //发指令
+        _wpa_cli_cmd(wlan, "scan_result\n");//刷新结果
+        //延时
+        view_delay_ms(1000);
+        //倒计时
+        if(--wlan->scanTimeout < 1)
+            wlan->scan = false;
+    }
 }
 
 //
 int screen_wifi_status(void)
 {
-	if(!wlan || !wlan->wpa_cli.run)
-		return -1;
-	
-	;
+    if(!wlan || !wlan->wpa_cli.run)
+        return -1;
+    
+    ;
 
-	return 0;
+    return 0;
 }
 
 //argv/传给回调函数的用户结构体 
@@ -250,118 +251,113 @@ int screen_wifi_status(void)
 void screen_wifi_scan(void *object, ScanCallback callback, int timeout)
 {
     if(wlan && wlan->wpa_cli.run)
-	{
-		wlan->scanObject = object;
-		wlan->scanCallback = callback;
-		wlan->scanTimeout = 10;//timeout;
-		if(!wlan->scan)//当前没有在扫描
-		{
-			//开线程
-			pthread_attr_t attr;
-			pthread_t th;
-			pthread_attr_init(&attr);
-			pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
-			if(pthread_create(&th, &attr, (void *)&_thr_wpa_cli_scan, (void *)wlan) < 0)
-				wlan->scanTimeout = 0;//scan=false scanTimeout=0 
-			//attr destroy
-			pthread_attr_destroy(&attr);
-		}
-	}
+    {
+        wlan->scanObject = object;
+        wlan->scanCallback = callback;
+        wlan->scanTimeout = 10;//timeout;
+        if(!wlan->scan)//当前没有在扫描
+        {
+            //开线程
+            pthread_attr_t attr;
+            pthread_t th;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
+            if(pthread_create(&th, &attr, (void *)&_thr_wpa_cli_scan, (void *)wlan) < 0)
+                wlan->scanTimeout = 0;//scan=false scanTimeout=0 
+            //attr destroy
+            pthread_attr_destroy(&attr);
+        }
+    }
 }
 
 void screen_wifi_connect(char *ssid, char *key)
 {
-	if(!wlan || !wlan->wpa_cli.run)
-		return;
-	
-	char cmd[WPA_CLI_CMD_LEN];
+    if(!wlan || !wlan->wpa_cli.run)
+        return;
+    
+    char cmd[WPA_CLI_CMD_LEN];
 
-	//关闭扫描
-	wlan->scan = false;
+    //关闭扫描
+    wlan->scan = false;
 
-	//移除0号网络
-	if(!_wpa_cli_cmd(wlan, "remove_network 0\n"))
-	{
-		printf("remove_network 0 err !\n");
-		// return;
-	}
-	view_delay_ms(1000);
-	//添加0号网络
-	if(!_wpa_cli_cmd2(wlan, "add_network\n", "OK"))
-	{
-		printf("add_network err !\n");
-		// return;
-	}
-	view_delay_ms(1000);
-	//设置名称
-	memset(cmd, 0, WPA_CLI_CMD_LEN);
-	snprintf(cmd, WPA_CLI_CMD_LEN, "set_network 0 ssid \"%s\"\n", ssid);
-	if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
-	{
-		printf("set_network 0 ssid \"%s\" err !\n", ssid);
-		return;
-	}
-	view_delay_ms(1000);
-	//
-	if(key)
-	{
-		//设置密码
-		memset(cmd, 0, WPA_CLI_CMD_LEN);
-		snprintf(cmd, WPA_CLI_CMD_LEN, "set_network 0 psk \"%s\"\n", key);
-		if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
-		{
-			printf("set_network 0 psk \"%s\" err !\n", key);
-			return;
-		}
-		//设置密码类型
-		memset(cmd, 0, WPA_CLI_CMD_LEN);
-		snprintf(cmd, WPA_CLI_CMD_LEN, "set_network 0 key_mgmt WPA-PSK\n");
-		if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
-		{
-			printf("set_network 0 key_mgmt WPA-PSK err !\n");
-			return;
-		}
-	}
-	else
-	{
-		//设置密码类型
-		memset(cmd, 0, WPA_CLI_CMD_LEN);
-		snprintf(cmd, WPA_CLI_CMD_LEN, "set_network 0 key_mgmt NONE\n");
-		if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
-		{
-			printf("set_network 0 key_mgmt NONE err !\n");
-			return;
-		}
-	}
-	view_delay_ms(1000);
-	//启动连接
-	memset(cmd, 0, WPA_CLI_CMD_LEN);
-	snprintf(cmd, WPA_CLI_CMD_LEN, "enable_network 0\n");
-	if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
-	{
-		printf("enable_network 0 err !\n");
-		return;
-	}
-	view_delay_ms(1000);
+    //添加0号网络
+    if(!_wpa_cli_cmd2(wlan, "add_network\n", ">"))
+    {
+        printf("[add_network err !]\n");
+        // return;
+    }
+    else
+	sscanf(wlan->cmdResult, "%[^0-9]%d", cmd, &wlan->wifi_id);
+    //设置名称
+    memset(cmd, 0, WPA_CLI_CMD_LEN);
+    snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d ssid \"%s\"\n", wlan->wifi_id, ssid);
+    if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+    {
+        printf("set_network %d ssid \"%s\" err !\n", wlan->wifi_id, ssid);
+        return;
+    }
+    //
+    if(key)
+    {
+        //设置密码
+        memset(cmd, 0, WPA_CLI_CMD_LEN);
+        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d psk \"%s\"\n", wlan->wifi_id, key);
+        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        {
+            printf("set_network %d psk \"%s\" err !\n", wlan->wifi_id, key);
+            return;
+        }
+        //设置密码类型
+        memset(cmd, 0, WPA_CLI_CMD_LEN);
+        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d key_mgmt WPA-PSK\n", wlan->wifi_id);
+        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        {
+            printf("set_network %d key_mgmt WPA-PSK err !\n", wlan->wifi_id);
+            return;
+        }
+    }
+    else
+    {
+        //设置密码类型
+        memset(cmd, 0, WPA_CLI_CMD_LEN);
+        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d key_mgmt NONE\n", wlan->wifi_id);
+        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        {
+            printf("set_network %d key_mgmt NONE err !\n", wlan->wifi_id);
+            return;
+        }
+    }
+    //启动连接
+    memset(cmd, 0, WPA_CLI_CMD_LEN);
+    snprintf(cmd, WPA_CLI_CMD_LEN, "enable_network %d\n", wlan->wifi_id);
+    if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+    {
+        printf("enable_network %d err !\n", wlan->wifi_id);
+        return;
+    }
     //start : wpa_supplicant, udhcpc
     // execl("/bin/sh", "sh", "-c", SHELL_WIFI_START, (char *)0);
-	system(SHELL_WIFI_START);
+    system(SHELL_WIFI_START);
 }
 
 void screen_wifi_disconnect(void)
 {
-	if(!wlan || !wlan->wpa_cli.run)
-		return;
+    if(!wlan || !wlan->wpa_cli.run)
+        return;
+    
+    char cmd[WPA_CLI_CMD_LEN];
 
-	//关闭扫描
-	wlan->scan = false;
+    //关闭扫描
+    wlan->scan = false;
 
-	//移除0号网络
-	if(!_wpa_cli_cmd(wlan, "remove_network 0\n"))
-	{
-		printf("remove_network 0 err !\n");
-		return;
-	}
+    //移除0号网络
+    memset(cmd, 0, WPA_CLI_CMD_LEN);
+    snprintf(cmd, WPA_CLI_CMD_LEN, "remove_network %d\n", wlan->wifi_id);
+    if(!_wpa_cli_cmd(wlan, cmd))
+    {
+        printf("remove_network %d err !\n", wlan->wifi_id);
+        return;
+    }
 }
 
 void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
@@ -374,34 +370,34 @@ void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
         ret = read(wlan->wpa_cli.fr, buff, 1024);//此处为阻塞读
         if(ret > 0)
         {
-			if(wlan->cmdResultReady == 1)
-			{
-				//
-				memset(wlan->cmdResult, 0, WPA_CLI_RESULT_LEN);
-				wlan->cmdResultPoint = wlan->cmdResult;
-				//
-				memcpy(wlan->cmdResultPoint, buff, ret);
-				wlan->cmdResultPoint += ret;
-				//
-				wlan->cmdResultReady = 2;
-			}
-			else if(wlan->cmdResultReady == 2)
-			{
-				if(wlan->cmdResultPoint - wlan->cmdResult <= WPA_CLI_RESULT_LEN - ret)
-				{
-					memcpy(wlan->cmdResultPoint, buff, ret);
-					wlan->cmdResultPoint += ret;
-				}
-			}
-			else if(wlan->scan)
-			{
-				//整理数据并回调
-				;
-			}
-			//
-			printf("%s\n", buff);
-			//
-			continue;
+            if(wlan->cmdResultReady == 1)
+            {
+                //
+                memset(wlan->cmdResult, 0, WPA_CLI_RESULT_LEN);
+                wlan->cmdResultPoint = wlan->cmdResult;
+                //
+                memcpy(wlan->cmdResultPoint, buff, ret);
+                wlan->cmdResultPoint += ret;
+                //
+                wlan->cmdResultReady = 2;
+            }
+            else if(wlan->cmdResultReady == 2)
+            {
+                if(wlan->cmdResultPoint - wlan->cmdResult <= WPA_CLI_RESULT_LEN - ret)
+                {
+                    memcpy(wlan->cmdResultPoint, buff, ret);
+                    wlan->cmdResultPoint += ret;
+                }
+            }
+            else if(wlan->scan)
+            {
+                //整理数据并回调
+                ;
+            }
+            //
+            printf("%s\n", buff);
+            //
+            continue;
         }
         else//检查子进程状态
         {
@@ -437,7 +433,7 @@ void screen_wifi_exit(void)
 {
     //kill : udhcpc, wpa_supplicant
     // execl("/bin/sh", "sh", "-c", SHELL_WIFI_STOP, (char *)0);
-	system(SHELL_WIFI_STOP);
+    system(SHELL_WIFI_STOP);
 
     //kill : wpa_cli
     if(wlan)
@@ -451,7 +447,7 @@ void screen_wifi_init(void)
 
     //start : wpa_supplicant, udhcpc
     // execl("/bin/sh", "sh", "-c", SHELL_WIFI_START, (char *)0);
-	system(SHELL_WIFI_START);
+    system(SHELL_WIFI_START);
 
     //start : wpa_cli
     if(wlan == NULL)
@@ -474,104 +470,104 @@ void screen_wifi_init(void)
 
 void fun(DuplexPipe *dp)
 {
-	char input[1024];
-	int ret;
-	while(dp->run)
-	{
-		memset(input, 0, sizeof(input));
-		if((ret = scanf("%s", input)) > 0)
-		{
-			// if((dp->run))
-			// {
-			// 	if(strstr(input, "exit"))
-			// 	{
-			// 		screen_duplex_pclose(dp);
-			// 		break;
-			// 	}
-			// 	else
-			// 	{
-			// 		ret = strlen(input);
-			// 		input[ret] = '\n';
-			// 		ret = write(dp->fw, input, ret+1);
-			// 		if(ret <= 0)
-			// 		{
-			// 			printf("--------- write err %d / %d ---------\n", 
-			// 				ret, waitpid(dp->pid, NULL, WNOHANG|WUNTRACED));
-			// 		}
-			// 	}
-			// }
-			// else
-			// 	break;
+    char input[1024];
+    int ret;
+    while(dp->run)
+    {
+        memset(input, 0, sizeof(input));
+        if((ret = scanf("%s", input)) > 0)
+        {
+            // if((dp->run))
+            // {
+            //     if(strstr(input, "exit"))
+            //     {
+            //         screen_duplex_pclose(dp);
+            //         break;
+            //     }
+            //     else
+            //     {
+            //         ret = strlen(input);
+            //         input[ret] = '\n';
+            //         ret = write(dp->fw, input, ret+1);
+            //         if(ret <= 0)
+            //         {
+            //             printf("--------- write err %d / %d ---------\n", 
+            //                 ret, waitpid(dp->pid, NULL, WNOHANG|WUNTRACED));
+            //         }
+            //     }
+            // }
+            // else
+            //     break;
 
-			if((dp->run))
-			{
-				if(strstr(input, "exit"))
-				{
-					screen_duplex_pclose(dp);
-					break;
-				}
-				else if(input[0] == '1')
-					strcpy(input, "scan\n");
-				else if(input[0] == '2')
-					strcpy(input, "scan_result\n");
-				else if(input[0] == '0')
-					strcpy(input, "q\n");
-				else
-					strcpy(input, "status\n");
-				write(dp->fw, input, strlen(input));
-			}
-			else
-				break;
-		}
-	}
+            if((dp->run))
+            {
+                if(strstr(input, "exit"))
+                {
+                    screen_duplex_pclose(dp);
+                    break;
+                }
+                else if(input[0] == '1')
+                    strcpy(input, "scan\n");
+                else if(input[0] == '2')
+                    strcpy(input, "scan_result\n");
+                else if(input[0] == '0')
+                    strcpy(input, "q\n");
+                else
+                    strcpy(input, "status\n");
+                write(dp->fw, input, strlen(input));
+            }
+            else
+                break;
+        }
+    }
 
-	printf("write exit !\n");
+    printf("write exit !\n");
 }
 
 int main (void)
 {
-	int ret = 0, ret2;
-	char output[1024];
-	pthread_t pfd;
+    int ret = 0, ret2;
+    char output[1024];
+    pthread_t pfd;
 
     DuplexPipe dp;
     // if(!screen_duplex_popen(&dp, "python"))
     if(!screen_duplex_popen(&dp, "wpa_cli -i wlan0"))
-	{
-		printf("popen failure !!\n");
-		return 1;
-	}
+    {
+        printf("popen failure !!\n");
+        return 1;
+    }
 
-	pthread_create(&pfd, NULL, fun, (void *)&dp);
+    pthread_create(&pfd, NULL, fun, (void *)&dp);
 
-	while (dp.run)
-	{
-		do{
-			memset(output, 0, sizeof(output));
-			if((ret = read(dp.fr, output, sizeof(output))) > 0)
-				printf("%s", output);
-			else if(ret <= 0)
-			{
-				printf("--------- read err %d / %d ---------\n", 
-					ret, ret2 = waitpid(dp.pid, NULL, WNOHANG|WUNTRACED));
-				if(ret2 < 0 || ret2 == dp.pid)
-				{
-					dp.run = false;
-					screen_duplex_pclose(&dp);
-					break;
-				}
-			}
-			printf("\nEND %d\n", ret);
-		}while(ret > 0);
-		printf("\nEND2 %d\n", ret);
-		sleep(1);
-	}
+    while (dp.run)
+    {
+        do{
+            memset(output, 0, sizeof(output));
+            if((ret = read(dp.fr, output, sizeof(output))) > 0)
+                printf("%s", output);
+            else if(ret <= 0)
+            {
+                printf("--------- read err %d / %d ---------\n", 
+                    ret, ret2 = waitpid(dp.pid, NULL, WNOHANG|WUNTRACED));
+                if(ret2 < 0 || ret2 == dp.pid)
+                {
+                    dp.run = false;
+                    screen_duplex_pclose(&dp);
+                    break;
+                }
+            }
+            printf("\nEND %d\n", ret);
+        }while(ret > 0);
+        printf("\nEND2 %d\n", ret);
+        sleep(1);
+    }
 
-	printf("read exit !\n");
+    printf("read exit !\n");
 
-	while(1)
-	{
-		printf("\nmain wait\n");
-		sleep(1);
-	}
+    while(1)
+    {
+        printf("\nmain wait\n");
+        sleep(1);
+    }
 }*/
