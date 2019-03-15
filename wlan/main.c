@@ -22,6 +22,8 @@ int main(void)
                     screen_wifi_connect("OP5", "1234rewq");
                 else if(scanfStr[1] == '4')
                     screen_wifi_disconnect();
+                else if(scanfStr[1] == '5')
+                    screen_wifi_status();
                 else if(scanfStr[1] == '0')
                     screen_wifi_exit();
             }

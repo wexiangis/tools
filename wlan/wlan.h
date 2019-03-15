@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <stdbool.h>
+#include <fcntl.h>
 
 //----- 全双工管道封装 -----
 
@@ -23,6 +24,7 @@ typedef void (*ScanCallback)(void *object, char *name, int keyType, int power);
 void screen_wifi_scan(void *object, ScanCallback callback, int timeout);
 void screen_wifi_connect(char *ssid, char *key);
 void screen_wifi_disconnect(void);
+int screen_wifi_status(void);
 void screen_wifi_exit(void);
 void screen_wifi_init(void);
 

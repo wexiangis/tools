@@ -4,11 +4,11 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -153,10 +153,15 @@ typedef struct{
 static ScreenWlan_Struct *wlan = NULL;
 
 //发指令
-bool _wpa_cli_cmd(ScreenWlan_Struct *wlan, char *cmd)
+bool _wpa_cli_cmd(ScreenWlan_Struct *wlan, char *cmd, ...)
 {
     if(wlan && wlan->wpa_cli.run && cmd)
     {
+		char buff[WPA_CLI_CMD_LEN] = {0};
+		va_list ap;
+		va_start(ap , cmd);
+		vsnprintf(buff, WPA_CLI_CMD_LEN, cmd, ap);
+		va_end(ap);
         //发指令
         int i = 1;
         while(wlan->cmdReady)//等待空闲
@@ -166,8 +171,7 @@ bool _wpa_cli_cmd(ScreenWlan_Struct *wlan, char *cmd)
                 return false;
         }
         wlan->cmdReady = 1;//在编辑
-        memset(wlan->cmd, 0, WPA_CLI_CMD_LEN);
-        strcpy(wlan->cmd, cmd);
+        memcpy(wlan->cmd, buff, WPA_CLI_CMD_LEN);
         wlan->cmdReady = 2;//发出
         return true;
     }
@@ -175,9 +179,9 @@ bool _wpa_cli_cmd(ScreenWlan_Struct *wlan, char *cmd)
 }
 
 //发指令,并等待期望返回 失败返回 NULL 成功返回 wlan->cmdResult 指针
-char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
+char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *expect, char *cmd, ...)
 {
-    if(wlan && wlan->wpa_cli.run && expect)
+    if(wlan && wlan->wpa_cli.run)
     {
         int i = 0;
         while(wlan->cmdResultReady)//等待空闲
@@ -187,8 +191,21 @@ char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
                 return NULL;
         }
         //发出指令
-        if(!_wpa_cli_cmd(wlan, cmd))
-            return NULL;
+		char buff[WPA_CLI_CMD_LEN] = {0};
+		va_list ap;
+		va_start(ap , cmd);
+		vsnprintf(buff, WPA_CLI_CMD_LEN, cmd, ap);
+		va_end(ap);
+        i = 1;
+        while(wlan->cmdReady)//等待空闲
+        {
+            view_delay_ms(100);
+            if(!wlan->wpa_cli.run || ++i > 30)//3秒超时
+                return NULL;
+        }
+        wlan->cmdReady = 1;//在编辑
+        memcpy(wlan->cmd, buff, WPA_CLI_CMD_LEN);
+        wlan->cmdReady = 2;//发出
         //等待回复
         wlan->cmdResultReady = 1;
         i = 0;
@@ -201,10 +218,10 @@ char *_wpa_cli_cmd2(ScreenWlan_Struct *wlan, char *cmd, char *expect)
                 return NULL;
             }
         }
-        view_delay_ms(500);
+        view_delay_ms(100);
         //匹配回复
         wlan->cmdResultReady = 3;
-        if(strstr(wlan->cmdResult, expect))
+        if(!expect || (expect && strstr(wlan->cmdResult, expect)))
         {
             wlan->cmdResultReady = 0;
             return wlan->cmdResult;
@@ -232,17 +249,6 @@ void _thr_wpa_cli_scan(ScreenWlan_Struct *wlan)
         if(--wlan->scanTimeout < 1)
             wlan->scan = false;
     }
-}
-
-//
-int screen_wifi_status(void)
-{
-    if(!wlan || !wlan->wpa_cli.run)
-        return -1;
-    
-    ;
-
-    return 0;
 }
 
 //argv/传给回调函数的用户结构体 
@@ -274,65 +280,53 @@ void screen_wifi_connect(char *ssid, char *key)
 {
     if(!wlan || !wlan->wpa_cli.run)
         return;
-    
-    char cmd[WPA_CLI_CMD_LEN];
 
     //关闭扫描
     wlan->scan = false;
 
-    //添加0号网络
-    if(!_wpa_cli_cmd2(wlan, "add_network\n", ">"))
+    //添加网络
+    if(!_wpa_cli_cmd2(wlan, ">", "add_network\n"))
     {
         printf("[add_network err !]\n");
-        // return;
+        return;
     }
     else
-	sscanf(wlan->cmdResult, "%[^0-9]%d", cmd, &wlan->wifi_id);
+	    sscanf(wlan->cmdResult, "%*[^0-9]%d", &wlan->wifi_id);
     //设置名称
-    memset(cmd, 0, WPA_CLI_CMD_LEN);
-    snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d ssid \"%s\"\n", wlan->wifi_id, ssid);
-    if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+    if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d ssid \"%s\"\n", wlan->wifi_id, ssid))
     {
-        printf("set_network %d ssid \"%s\" err !\n", wlan->wifi_id, ssid);
+        printf("[set_network %d ssid \"%s\" err !]\n", wlan->wifi_id, ssid);
         return;
     }
     //
     if(key)
     {
         //设置密码
-        memset(cmd, 0, WPA_CLI_CMD_LEN);
-        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d psk \"%s\"\n", wlan->wifi_id, key);
-        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d psk \"%s\"\n", wlan->wifi_id, key))
         {
-            printf("set_network %d psk \"%s\" err !\n", wlan->wifi_id, key);
+            printf("[set_network %d psk \"%s\" err !]\n", wlan->wifi_id, key);
             return;
         }
         //设置密码类型
-        memset(cmd, 0, WPA_CLI_CMD_LEN);
-        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d key_mgmt WPA-PSK\n", wlan->wifi_id);
-        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt WPA-PSK\n", wlan->wifi_id))
         {
-            printf("set_network %d key_mgmt WPA-PSK err !\n", wlan->wifi_id);
+            printf("[set_network %d key_mgmt WPA-PSK err !]\n", wlan->wifi_id);
             return;
         }
     }
     else
     {
         //设置密码类型
-        memset(cmd, 0, WPA_CLI_CMD_LEN);
-        snprintf(cmd, WPA_CLI_CMD_LEN, "set_network %d key_mgmt NONE\n", wlan->wifi_id);
-        if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt NONE\n", wlan->wifi_id))
         {
-            printf("set_network %d key_mgmt NONE err !\n", wlan->wifi_id);
+            printf("[set_network %d key_mgmt NONE err !]\n", wlan->wifi_id);
             return;
         }
     }
     //启动连接
-    memset(cmd, 0, WPA_CLI_CMD_LEN);
-    snprintf(cmd, WPA_CLI_CMD_LEN, "enable_network %d\n", wlan->wifi_id);
-    if(!_wpa_cli_cmd2(wlan, cmd, "OK"))
+    if(!_wpa_cli_cmd2(wlan, "OK", "enable_network %d\n", wlan->wifi_id))
     {
-        printf("enable_network %d err !\n", wlan->wifi_id);
+        printf("[enable_network %d err !]\n", wlan->wifi_id);
         return;
     }
     //start : wpa_supplicant, udhcpc
@@ -344,20 +338,27 @@ void screen_wifi_disconnect(void)
 {
     if(!wlan || !wlan->wpa_cli.run)
         return;
-    
-    char cmd[WPA_CLI_CMD_LEN];
 
     //关闭扫描
     wlan->scan = false;
 
-    //移除0号网络
-    memset(cmd, 0, WPA_CLI_CMD_LEN);
-    snprintf(cmd, WPA_CLI_CMD_LEN, "remove_network %d\n", wlan->wifi_id);
-    if(!_wpa_cli_cmd(wlan, cmd))
+    //移除当前连接
+    if(!_wpa_cli_cmd(wlan, "remove_network %d\n", wlan->wifi_id))
     {
-        printf("remove_network %d err !\n", wlan->wifi_id);
+        printf("[remove_network %d err !]\n", wlan->wifi_id);
         return;
     }
+}
+
+//
+int screen_wifi_status(void)
+{
+    if(!wlan || !wlan->wpa_cli.run)
+        return -1;
+    
+    _wpa_cli_cmd(wlan, "status\n");
+
+    return 0;
 }
 
 void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
@@ -370,26 +371,28 @@ void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
         ret = read(wlan->wpa_cli.fr, buff, 1024);//此处为阻塞读
         if(ret > 0)
         {
-            if(wlan->cmdResultReady == 1)
+            if(wlan->cmdResultReady == 1)//开始保存返回信息
             {
-                //
+                //指针和缓冲区初始化
                 memset(wlan->cmdResult, 0, WPA_CLI_RESULT_LEN);
                 wlan->cmdResultPoint = wlan->cmdResult;
-                //
+                //拷贝以及指针移动
                 memcpy(wlan->cmdResultPoint, buff, ret);
                 wlan->cmdResultPoint += ret;
-                //
+                //标志+1
                 wlan->cmdResultReady = 2;
             }
-            else if(wlan->cmdResultReady == 2)
+            else if(wlan->cmdResultReady == 2)//续传返回信息
             {
+				//继续拷贝是否会超出缓冲区
                 if(wlan->cmdResultPoint - wlan->cmdResult <= WPA_CLI_RESULT_LEN - ret)
                 {
+                	//拷贝以及指针移动
                     memcpy(wlan->cmdResultPoint, buff, ret);
                     wlan->cmdResultPoint += ret;
                 }
             }
-            else if(wlan->scan)
+            else if(wlan->scan)//正在扫描
             {
                 //整理数据并回调
                 ;
@@ -404,7 +407,7 @@ void _thr_wpa_cli_read(ScreenWlan_Struct *wlan)
             if(waitpid(wlan->wpa_cli.pid, NULL, WNOHANG|WUNTRACED) != 0)
                 break;
         }
-        view_delay_ms(200);
+        view_delay_ms(100);
     }
     printf("wpa_cli_read exit ...\n");
 }
