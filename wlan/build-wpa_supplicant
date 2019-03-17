@@ -2,15 +2,17 @@
 
 defconfig:
 #wwx add
+CONFIG_BUILD_WPA_CLIENT_SO=y
 CFLAGS += -I/friendlyArm/lib/ln/install-1/include
 LIBS += -L/friendlyArm/lib/ln/install-1/lib
 CFLAGS += -I/friendlyArm/lib/ln/install-3/include
 LIBS += -L/friendlyArm/lib/ln/install-1/lib
+CFLAGS += -I/friendlyArm/lib/openssl/install/include
+LIBS += -L/friendlyArm/lib/openssl/install/lib
+
 
 cp ./defconfig ./.config
 
-CFLAGS += -I/friendlyArm/lib/openssl/install/include
-LIBS += -L/friendlyArm/lib/openssl/install/lib
 
 Makefile:
 CC=xxx
