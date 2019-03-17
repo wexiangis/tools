@@ -13,7 +13,7 @@ typedef struct{
 	bool run;
 }DuplexPipe;
 
-bool duplex_popen(DuplexPipe *dp, const char *cmd);
+bool duplex_popen(DuplexPipe *dp, char *cmd);
 void duplex_pclose(DuplexPipe *dp);
 
 //----- wlan -----

@@ -1,0 +1,20 @@
+
+
+defconfig:
+#wwx add
+CFLAGS += -I/friendlyArm/lib/ln/install-1/include
+LIBS += -L/friendlyArm/lib/ln/install-1/lib
+CFLAGS += -I/friendlyArm/lib/ln/install-3/include
+LIBS += -L/friendlyArm/lib/ln/install-1/lib
+
+cp ./defconfig ./.config
+
+CFLAGS += -I/friendlyArm/lib/openssl/install/include
+LIBS += -L/friendlyArm/lib/openssl/install/lib
+
+Makefile:
+CC=xxx
+install_path=friendlyArm/lib/wpa_supplicant/install
+export LIBDIR ?= ${install_path}/lib/
+export INCDIR ?= ${install_path}/include/
+export BINDIR ?= ${install_path}/sbin/

@@ -1,0 +1,5 @@
+
+./configure --prefix=/friendlyArm/lib/ln/install-1 --host=arm-linux-gnueabihf
+
+./configure --prefix=/friendlyArm/lib/ln/install-3 --host=arm-linux-gnueabihf
+
