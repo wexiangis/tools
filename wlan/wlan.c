@@ -91,41 +91,35 @@ void duplex_pclose(DuplexPipe *dp)
 
 //========== wlan维护 ==========
 
-#define SHELL_WIFI_START  "/etc/wpa_supplicant/start.sh"
-/*
-#!/bin/sh
+#define SHELL_WIFI_START \
+"#!/bin/sh\n"\
+"#insmod nl80211\n"\
+"if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
+"then\n"\
+"    echo \"wpa_supplicant is already running\"\n"\
+"else\n"\
+"   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
+"       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
+"   fi\n"\
+"    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant.conf -B\n"\
+"fi\n"\
+"if ps | grep -v grep | grep udhcpc > /dev/null\n"\
+"then\n"\
+"    echo \"udhcpc is already running\"\n"\
+"else\n"\
+"    udhcpc -i wlan0 > /dev/null &\n"\
+"fi"
 
-#insmod nl80211
-
-if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null
-then
-    echo "wpa_supplicant is already running"
-else
-    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant/wpa_supplicant.conf -B
-fi
-
-if ps | grep -v grep | grep udhcpc > /dev/null
-then
-    echo "udhcpc is already running"
-else
-    udhcpc -i wlan0 > /dev/null &
-fi
-*/
-
-#define SHELL_WIFI_STOP   "/etc/wpa_supplicant/stop.sh"
-/*
-#!/bin/sh
-killall udhcpc
-wpa_cli -iwlan0 terminate
-*/
+#define SHELL_WIFI_STOP     \
+"#!/bin/sh\n"\
+"killall udhcpc\n"\
+"wpa_cli -iwlan0 terminate\n"\
+"ip link set wlan0 down"
 
 #define CMD_WPA_CLI       "wpa_cli -i wlan0"
 
 #define  WPA_CLI_CMD_LEN    512
 #define  WPA_CLI_RESULT_LEN    10240
-
-//wifi 扫描每新增一条网络就回调该函数,由用户自行处理新增的网络
-// typedef void (*ScanCallback)(void *object, char *name, int keyType, int power);
 
 typedef struct{
     //----- wifi -----
@@ -140,20 +134,14 @@ typedef struct{
     //扫描
     bool scan;//在扫描中
     int scanTimeout;
+    //扫描回调
     void *scanObject;
     ScanCallback scanCallback;
-    //当前连接信息
-    int wifi_id;
-    int wifi_status;//0/无连接 1/在连接 2/获取ip 3/正常
-    char wifi_ssid[128];
-    char wifi_key[128];
-    char wifi_keyType;//0/无 1/WPA-PSK 2/WPA2-PSK
-    char wifi_ip[24];
-    char wifi_mac[24];
-    int wifi_freq;//当前连接网络 频段 0/无 24xx/2.4G 5xxx/5G
-    int wifi_power;//当前连接网络 信号强度 dbm
     unsigned int wifi_rate;//网速 bytes/s
     //----- ap -----
+
+    //当前连接信息
+    Wlan_Status status;
 }Wlan_Struct;
 
 static Wlan_Struct *wlan = NULL;
@@ -249,9 +237,80 @@ char *_wpa_cli_cmd2(Wlan_Struct *wlan, char *expect, char *cmd, ...)
     return NULL;
 }
 
+void _wpa_scan_info_release(WlanScan_Info *info)
+{
+    WlanScan_Info *in = info, *inNext;
+    while(in)
+    {
+        inNext = in->next;
+        free(in);
+        in = inNext;
+    }
+}
+
+WlanScan_Info *_wpa_scan_info(WlanScan_Info *info, char *str, int *num)
+{
+    WlanScan_Info *in = info, *next, tInfo;
+    char *p, keyType[512];
+    int i, total = 0;
+    if(str)
+    {
+        if((p = strstr(str, "scan_result")))
+        {
+            //跳过两行
+            for(i = 0; *p && i < 2;){
+                if(*p++ == '\n')
+                    i += 1;
+            }
+            //逐行解析
+            while(*p)
+            {
+                if((*p >= '0' && *p <= '9') ||
+                    (*p >= 'a' && *p <= 'z') ||
+                    (*p >= 'A' && *p <= 'Z'))
+                {
+                    memset(&tInfo, 0, sizeof(WlanScan_Info));
+                    memset(keyType, 0, 512);
+                    if(sscanf(p, "%s %d %d %s %[ -~]", 
+                        tInfo.bssid, &tInfo.frq, &tInfo.power, keyType, tInfo.ssid) == 5)
+                    {
+                        total += 1;
+                        //
+                        if(strncmp(keyType, "[ESS]", 5) == 0)
+                            tInfo.keyType = 0;
+                        else
+                            tInfo.keyType = 1;
+                        //
+                        if(!in)
+                            next = in = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
+                        else
+                            next = next->next = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
+                        memcpy(next, &tInfo, sizeof(WlanScan_Info));
+                        //
+                        // printf("  ssid: %s\n", tInfo.ssid);
+                        // printf("  frq: %d\n", tInfo.frq);
+                        // printf("  power: %d\n", tInfo.power);
+                        // printf("  keyType: %d %s\n", tInfo.keyType, keyType);
+                        // printf("  bssid: %s\n\n", tInfo.bssid);
+                    }
+                }
+                //跳过该行
+                while(*p && *p++ != '\n');
+            }
+        }
+    }
+    //
+    if(num)
+        *num = total;
+    return in;
+}
+
 void _thr_wpa_cli_scan(Wlan_Struct *wlan)
 {
     char *ret;
+    int num = 0;
+    WlanScan_Info *info = NULL;
+    //
     wlan->scan = true;
     if(_wpa_cli_cmd2(wlan, NULL, "scan\n"))//开始扫描
     {
@@ -262,7 +321,12 @@ void _thr_wpa_cli_scan(Wlan_Struct *wlan)
             //发指令
             if((ret = _wpa_cli_cmd2(wlan, ">", "scan_result\n")))
             {
-                ;// printf("[scan_result : \n%s]\n", ret);
+                if(wlan->scanCallback && (info = _wpa_scan_info(info, ret, &num)))
+                {
+                    wlan->scanCallback(wlan->scanObject, num, info);
+                    _wpa_scan_info_release(info);
+                    info = NULL;
+                }
             }
             //倒计时
             if(--wlan->scanTimeout < 1)
@@ -273,7 +337,7 @@ void _thr_wpa_cli_scan(Wlan_Struct *wlan)
 
 //argv/传给回调函数的用户结构体 
 //callback/回调函数
-//timeout/扫描时长,超时后不再扫描,不再回调 建议值10秒
+//timeout/扫描时长,超时后不再扫描,不再回调 建议值7秒
 void wifi_scan(void *object, ScanCallback callback, int timeout)
 {
     if(wlan && wlan->wpa_cli.run)
@@ -296,10 +360,10 @@ void wifi_scan(void *object, ScanCallback callback, int timeout)
     }
 }
 
-void wifi_connect(char *ssid, char *key)
+int wifi_connect(char *ssid, char *key)
 {
     if(!wlan || !wlan->wpa_cli.run)
-        return;
+        return -1;
 
     //关闭扫描
     wlan->scan = false;
@@ -307,83 +371,140 @@ void wifi_connect(char *ssid, char *key)
     //添加网络
     if(!_wpa_cli_cmd2(wlan, ">", "add_network\n"))
     {
-        printf("[add_network err !]\n");
-        return;
+        sprintf(stderr, "[add_network err !]\n");
+        return -1;
     }
     else
-	    sscanf(wlan->cmdResult, "%*[^0-9]%d", &wlan->wifi_id);
+	    sscanf(wlan->cmdResult, "%*[^0-9]%d", &wlan->status.id);
     //设置名称
-    if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d ssid \"%s\"\n", wlan->wifi_id, ssid))
+    if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d ssid \"%s\"\n", wlan->status.id, ssid))
     {
-        printf("[set_network %d ssid \"%s\" err !]\n", wlan->wifi_id, ssid);
-        return;
+        sprintf(stderr, "[set_network %d ssid \"%s\" err !]\n", wlan->status.id, ssid);
+        return -1;
     }
     //
     if(key)
     {
         //设置密码
-        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d psk \"%s\"\n", wlan->wifi_id, key))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d psk \"%s\"\n", wlan->status.id, key))
         {
-            printf("[set_network %d psk \"%s\" err !]\n", wlan->wifi_id, key);
-            return;
+            sprintf(stderr, "[set_network %d psk \"%s\" err !]\n", wlan->status.id, key);
+            return -1;
         }
         //设置密码类型
-        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt WPA-PSK\n", wlan->wifi_id))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt WPA-PSK\n", wlan->status.id))
         {
-            printf("[set_network %d key_mgmt WPA-PSK err !]\n", wlan->wifi_id);
-            return;
+            sprintf(stderr, "[set_network %d key_mgmt WPA-PSK err !]\n", wlan->status.id);
+            return -1;
         }
     }
     else
     {
         //设置密码类型
-        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt NONE\n", wlan->wifi_id))
+        if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt NONE\n", wlan->status.id))
         {
-            printf("[set_network %d key_mgmt NONE err !]\n", wlan->wifi_id);
-            return;
+            sprintf(stderr, "[set_network %d key_mgmt NONE err !]\n", wlan->status.id);
+            return -1;
         }
     }
     //启动连接
-    if(!_wpa_cli_cmd2(wlan, "OK", "enable_network %d\n", wlan->wifi_id))
+    if(!_wpa_cli_cmd2(wlan, "OK", "enable_network %d\n", wlan->status.id))
     {
-        printf("[enable_network %d err !]\n", wlan->wifi_id);
-        return;
+        sprintf(stderr, "[enable_network %d err !]\n", wlan->status.id);
+        return -1;
     }
     //start : wpa_supplicant, udhcpc
     // execl("/bin/sh", "sh", "-c", SHELL_WIFI_START, (char *)0);
     system(SHELL_WIFI_START);
+    //
+    return wlan->status.id;
 }
 
-void wifi_disconnect(void)
+int wifi_disconnect(void)
 {
     if(!wlan || !wlan->wpa_cli.run)
-        return;
+        return -1;
 
     //关闭扫描
     wlan->scan = false;
 
     //移除当前连接
-    if(!_wpa_cli_cmd(wlan, "remove_network %d\n", wlan->wifi_id))
+    if(!_wpa_cli_cmd(wlan, "remove_network %d\n", wlan->status.id))
     {
-        printf("[remove_network %d err !]\n", wlan->wifi_id);
-        return;
+        sprintf(stderr, "[remove_network %d err !]\n", wlan->status.id);
+        return -1;
     }
+    return wlan->status.id;
 }
 
 //
-int wifi_status(void)
+Wlan_Status *wifi_status(void)
 {
-    if(!wlan || !wlan->wpa_cli.run)
-        return -1;
-    
-    if(!_wpa_cli_cmd2(wlan, ">", "status\n"))
-    {
-        printf("[status err !]\n");
-        return -1;
-    }
-	//再此解析
+    char *ret, *p;
 
-    return 0;
+    if(!wlan || !wlan->wpa_cli.run)
+        return NULL;
+    
+    if(!(ret = _wpa_cli_cmd2(wlan, ">", "status\n")))
+    {
+        sprintf(stderr, "[status err !]\n");
+        return NULL;
+    }
+
+	//bssid
+    memset(wlan->status.bssid, 0, sizeof(wlan->status.bssid));
+    if((p = strstr(ret, "bssid=")))
+    {
+        p += 6;
+        sscanf(p, "%s", wlan->status.bssid);
+        //ssid
+        memset(wlan->status.ssid, 0, sizeof(wlan->status.ssid));
+        if((p = strstr(p, "ssid=")))
+            sscanf(p+5, "%[ -~]", wlan->status.ssid);
+    }
+    //ip
+    memset(wlan->status.ip, 0, sizeof(wlan->status.ip));
+    if((p = strstr(ret, "ip_address=")))
+    {
+        p += 11;
+        sscanf(p, "%s", wlan->status.ip);
+        //addr
+        memset(wlan->status.addr, 0, sizeof(wlan->status.addr));
+        if((p = strstr(p, "address=")))
+            sscanf(p+8, "%s", wlan->status.addr);
+    }
+    //p2p_dev_addr
+    memset(wlan->status.p2p_dev_addr, 0, sizeof(wlan->status.p2p_dev_addr));
+    if((p = strstr(ret, "p2p_device_address=")))
+        sscanf(p+19, "%s", wlan->status.p2p_dev_addr);
+    //uuid
+    memset(wlan->status.uuid, 0, sizeof(wlan->status.uuid));
+    if((p = strstr(ret, "uuid=")))
+        sscanf(p+5, "%s", wlan->status.uuid);
+    //frq
+    if((p = strstr(ret, "freq=")))
+        sscanf(p+5, "%d", &wlan->status.frq);
+    //keyType
+    if((p = strstr(ret, "key_mgmt=")))
+    {
+        p += 9;
+        if(strncmp(p, "NONE", 4) == 0)
+            wlan->status.keyType = 0;
+        else
+            wlan->status.keyType = 1;
+    }
+    //status
+    if((p = strstr(ret, "wpa_state=")))
+    {
+        p += 10;
+        if(strncmp(p, "COMPLETED", 9) == 0)
+            wlan->status.status = 1;
+        else
+            wlan->status.status = 0;
+    }else
+        wlan->status.status = 0;
+    //
+    return &wlan->status;
 }
 
 //指令透传
@@ -428,7 +549,7 @@ void _thr_wpa_cli_read(Wlan_Struct *wlan)
                 ;
             }
             //
-            printf("%s\n", buff);
+            // printf("%s\n", buff);
             continue;
         }
         else//检查子进程状态
@@ -506,110 +627,3 @@ void wifi_init(void)
     //attr destroy
     pthread_attr_destroy(&attr);
 }
-
-/*
-#include <pthread.h>
-
-void fun(DuplexPipe *dp)
-{
-    char input[1024];
-    int ret;
-    while(dp->run)
-    {
-        memset(input, 0, sizeof(input));
-        if((ret = scanf("%s", input)) > 0)
-        {
-            // if((dp->run))
-            // {
-            //     if(strstr(input, "exit"))
-            //     {
-            //         duplex_pclose(dp);
-            //         break;
-            //     }
-            //     else
-            //     {
-            //         ret = strlen(input);
-            //         input[ret] = '\n';
-            //         ret = write(dp->fw, input, ret+1);
-            //         if(ret <= 0)
-            //         {
-            //             printf("--------- write err %d / %d ---------\n", 
-            //                 ret, waitpid(dp->pid, NULL, WNOHANG|WUNTRACED));
-            //         }
-            //     }
-            // }
-            // else
-            //     break;
-
-            if((dp->run))
-            {
-                if(strstr(input, "exit"))
-                {
-                    duplex_pclose(dp);
-                    break;
-                }
-                else if(input[0] == '1')
-                    strcpy(input, "scan\n");
-                else if(input[0] == '2')
-                    strcpy(input, "scan_result\n");
-                else if(input[0] == '0')
-                    strcpy(input, "q\n");
-                else
-                    strcpy(input, "status\n");
-                write(dp->fw, input, strlen(input));
-            }
-            else
-                break;
-        }
-    }
-
-    printf("write exit !\n");
-}
-
-int main (void)
-{
-    int ret = 0, ret2;
-    char output[1024];
-    pthread_t pfd;
-
-    DuplexPipe dp;
-    // if(!duplex_popen(&dp, "python"))
-    if(!duplex_popen(&dp, "wpa_cli -i wlan0"))
-    {
-        printf("popen failure !!\n");
-        return 1;
-    }
-
-    pthread_create(&pfd, NULL, fun, (void *)&dp);
-
-    while (dp.run)
-    {
-        do{
-            memset(output, 0, sizeof(output));
-            if((ret = read(dp.fr, output, sizeof(output))) > 0)
-                printf("%s", output);
-            else if(ret <= 0)
-            {
-                printf("--------- read err %d / %d ---------\n", 
-                    ret, ret2 = waitpid(dp.pid, NULL, WNOHANG|WUNTRACED));
-                if(ret2 < 0 || ret2 == dp.pid)
-                {
-                    dp.run = false;
-                    duplex_pclose(&dp);
-                    break;
-                }
-            }
-            printf("\nEND %d\n", ret);
-        }while(ret > 0);
-        printf("\nEND2 %d\n", ret);
-        sleep(1);
-    }
-
-    printf("read exit !\n");
-
-    while(1)
-    {
-        printf("\nmain wait\n");
-        sleep(1);
-    }
-}*/
