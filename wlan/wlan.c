@@ -89,37 +89,11 @@ void duplex_pclose(DuplexPipe *dp)
     }
 }
 
-//========== wlan维护 ==========
+//========== wlan -- wifi ==========
 
-#define SHELL_WIFI_START \
-"#!/bin/sh\n"\
-"#insmod nl80211\n"\
-"if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
-"then\n"\
-"    echo \"wpa_supplicant is already running\"\n"\
-"else\n"\
-"   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
-"       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
-"   fi\n"\
-"    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant.conf -B\n"\
-"fi\n"\
-"if ps | grep -v grep | grep udhcpc > /dev/null\n"\
-"then\n"\
-"    echo \"udhcpc is already running\"\n"\
-"else\n"\
-"    udhcpc -i wlan0 > /dev/null &\n"\
-"fi"
-
-#define SHELL_WIFI_STOP     \
-"#!/bin/sh\n"\
-"killall udhcpc\n"\
-"wpa_cli -iwlan0 terminate\n"\
-"ip link set wlan0 down"
-
-#define CMD_WPA_CLI       "wpa_cli -i wlan0"
-
-#define  WPA_CLI_CMD_LEN    512
-#define  WPA_CLI_RESULT_LEN    10240
+#define WPA_CLI_CMD_LEN    512
+#define WPA_CLI_RESULT_LEN    10240
+#define WLAN_ASSERT()  ((wlan && wlan->wpa_cli.run)?true:false)
 
 typedef struct{
     //----- wifi -----
@@ -137,14 +111,47 @@ typedef struct{
     //扫描回调
     void *scanObject;
     ScanCallback scanCallback;
-    unsigned int wifi_rate;//网速 bytes/s
+
     //----- ap -----
+    bool ap_run;
 
     //当前连接信息
     Wlan_Status status;
 }Wlan_Struct;
 
 static Wlan_Struct *wlan = NULL;
+
+#define SHELL_WPA_SUPPLICANT_START \
+"#!/bin/sh\n"\
+"if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
+"then\n"\
+"    echo \"wpa_supplicant is already running\"\n"\
+"else\n"\
+"   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
+"       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
+"   fi\n"\
+"    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant.conf -B\n"\
+"fi\n"
+
+#define SHELL_WPA_SUPPLICANT_STOP \
+"#!/bin/sh\n"\
+"wpa_cli -iwlan0 terminate\n"\
+"ip link set wlan0 down\n"
+
+#define SHELL_UDHCPC_START \
+"#!/bin/sh\n"\
+"if ps | grep -v grep | grep udhcpc > /dev/null\n"\
+"then\n"\
+"    echo \"udhcpc is already running\"\n"\
+"else\n"\
+"    udhcpc -i wlan0 > /dev/null &\n"\
+"fi\n"
+
+#define SHELL_UDHCPC_STOP \
+"#!/bin/sh\n"\
+"killall udhcpc\n"\
+
+#define SHELL_WPA_CLI  "wpa_cli -i wlan0"
 
 //发指令
 bool _wpa_cli_cmd(Wlan_Struct *wlan, char *cmd, ...)
@@ -340,11 +347,11 @@ void _thr_wpa_cli_scan(Wlan_Struct *wlan)
 //timeout/扫描时长,超时后不再扫描,不再回调 建议值7秒
 void wifi_scan(void *object, ScanCallback callback, int timeout)
 {
-    if(wlan && wlan->wpa_cli.run)
+    if(WLAN_ASSERT())
     {
         wlan->scanObject = object;
         wlan->scanCallback = callback;
-        wlan->scanTimeout = 10;//timeout;
+        wlan->scanTimeout = timeout;
         if(!wlan->scan)//当前没有在扫描
         {
             //开线程
@@ -360,10 +367,19 @@ void wifi_scan(void *object, ScanCallback callback, int timeout)
     }
 }
 
+void wifi_scanStop(void)
+{
+    //关闭扫描
+    if(WLAN_ASSERT())
+        wlan->scan = false;
+}
+
 int wifi_connect(char *ssid, char *key)
 {
-    if(!wlan || !wlan->wpa_cli.run)
+    if(!WLAN_ASSERT())
         return -1;
+
+    system(SHELL_UDHCPC_STOP);
 
     //关闭扫描
     wlan->scan = false;
@@ -383,7 +399,7 @@ int wifi_connect(char *ssid, char *key)
         return -1;
     }
     //
-    if(key)
+    if(key && key[0])
     {
         //设置密码
         if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d psk \"%s\"\n", wlan->status.id, key))
@@ -407,29 +423,39 @@ int wifi_connect(char *ssid, char *key)
             return -1;
         }
     }
+    //启动自动获取ip
+    system(SHELL_UDHCPC_START);
+    //
+    wlan_delay_ms(500);
+    //
     //启动连接
     if(!_wpa_cli_cmd2(wlan, "OK", "enable_network %d\n", wlan->status.id))
     {
         sprintf(stderr, "[enable_network %d err !]\n", wlan->status.id);
         return -1;
     }
-    //start : wpa_supplicant, udhcpc
-    // execl("/bin/sh", "sh", "-c", SHELL_WIFI_START, (char *)0);
-    system(SHELL_WIFI_START);
+    //若有多条网络 设置使用当前
+    if(!_wpa_cli_cmd2(wlan, "OK", "select_network %d\n", wlan->status.id))
+    {
+        sprintf(stderr, "[select_network %d err !]\n", wlan->status.id);
+        return -1;
+    }
     //
     return wlan->status.id;
 }
 
 int wifi_disconnect(void)
 {
-    if(!wlan || !wlan->wpa_cli.run)
+    if(!WLAN_ASSERT())
         return -1;
+
+    system(SHELL_UDHCPC_STOP);
 
     //关闭扫描
     wlan->scan = false;
 
     //移除当前连接
-    if(!_wpa_cli_cmd(wlan, "remove_network %d\n", wlan->status.id))
+    if(!_wpa_cli_cmd2(wlan, "OK", "remove_network %d\n", wlan->status.id))
     {
         sprintf(stderr, "[remove_network %d err !]\n", wlan->status.id);
         return -1;
@@ -442,8 +468,11 @@ Wlan_Status *wifi_status(void)
 {
     char *ret, *p;
 
-    if(!wlan || !wlan->wpa_cli.run)
+    if(!WLAN_ASSERT())
         return NULL;
+
+    //关闭扫描
+    wlan->scan = false;
     
     if(!(ret = _wpa_cli_cmd2(wlan, ">", "status\n")))
     {
@@ -510,8 +539,12 @@ Wlan_Status *wifi_status(void)
 //指令透传
 char *wifi_through(char *cmd)
 {
-    if(!wlan || !wlan->wpa_cli.run)
+    if(!WLAN_ASSERT())
         return NULL;
+
+    //关闭扫描
+    wlan->scan = false;
+
     return _wpa_cli_cmd2(wlan, NULL, "%s\n", cmd);
 }
 
@@ -595,8 +628,8 @@ void _thr_wpa_cli_write(Wlan_Struct *wlan)
 void wifi_exit(void)
 {
     //kill : udhcpc, wpa_supplicant
-    // execl("/bin/sh", "sh", "-c", SHELL_WIFI_STOP, (char *)0);
-    system(SHELL_WIFI_STOP);
+    system(SHELL_WPA_SUPPLICANT_STOP);
+    system(SHELL_UDHCPC_STOP);
 
     //kill : wpa_cli
     if(wlan)
@@ -605,25 +638,142 @@ void wifi_exit(void)
 
 void wifi_init(void)
 {
-    pthread_attr_t attr;
-    pthread_t th_r, th_w;
-
-    //start : wpa_supplicant, udhcpc
-    // execl("/bin/sh", "sh", "-c", SHELL_WIFI_START, (char *)0);
-    system(SHELL_WIFI_START);
+    //start : wpa_supplicant
+    system(SHELL_WPA_SUPPLICANT_START);
 
     //start : wpa_cli
     if(wlan == NULL)
         wlan = (Wlan_Struct *)calloc(1, sizeof(Wlan_Struct));
     if(!wlan->wpa_cli.run) //already running ?
-        duplex_popen(&wlan->wpa_cli, CMD_WPA_CLI);
-    
-    //attr init
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
-    //开启维护线程
-    pthread_create(&th_w, &attr, (void *)&_thr_wpa_cli_write, (void *)wlan);
-    pthread_create(&th_r, &attr, (void *)&_thr_wpa_cli_read, (void *)wlan);
-    //attr destroy
-    pthread_attr_destroy(&attr);
+    {
+        //
+        duplex_popen(&wlan->wpa_cli, SHELL_WPA_CLI);
+        //
+        pthread_attr_t attr;
+        pthread_t th_r, th_w;
+        //attr init
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
+        //开启维护线程
+        pthread_create(&th_w, &attr, (void *)&_thr_wpa_cli_write, (void *)wlan);
+        pthread_create(&th_r, &attr, (void *)&_thr_wpa_cli_read, (void *)wlan);
+        //attr destroy
+        pthread_attr_destroy(&attr);
+    }
+}
+
+//========== wlan -- ap热点 ==========
+
+#define SHELL_HOSTAPD_CONF_CREATE \
+"#!/bin/sh\n"\
+"echo \"interface=wlan0\" > /etc/hostapd.conf\n"\
+"echo \"driver=nl80211\" >> /etc/hostapd.conf\n"\
+"echo \"ssid=%s\" >> /etc/hostapd.conf\n"\
+"echo \"hw_mode=g\" >> /etc/hostapd.conf\n"\
+"echo \"channel=10\" >> /etc/hostapd.conf\n"\
+"echo \"macaddr_acl=0\" >> /etc/hostapd.conf\n"\
+"echo \"auth_algs=1\" >> /etc/hostapd.conf\n"\
+"echo \"ignore_broadcast_ssid=0\" >> /etc/hostapd.conf\n"\
+"echo \"wpa=%d\" >> /etc/hostapd.conf\n"\
+"echo \"wpa_passphrase=%s\" >> /etc/hostapd.conf\n"\
+"echo \"wpa_key_mgmt=WPA-PSK\" >> /etc/hostapd.conf\n"\
+"echo \"wpa_pairwise=TKIP\" >> /etc/hostapd.conf\n"\
+"echo \"rsn_pairwise=CCMP\" >> /etc/hostapd.conf\n"\
+"echo \"ctrl_interface=/var/run/hostapd\" >> /etc/hostapd.conf\n"
+
+#define SHELL_UDHCPC_CONF_CHECK \
+"#!/bin/sh\n"\
+"if [ ! -f /etc/udhcpd.conf ] ; then\n"\
+"   echo \"interface wlan0\" > /etc/udhcpd.conf\n"\
+"   echo \"start 192.168.43.2\" >> /etc/udhcpd.conf\n"\
+"   echo \"end 192.168.43.253\" >> /etc/udhcpd.conf\n"\
+"   echo \"opt dns 8.8.8.8 8.8.4.4\" >> /etc/udhcpd.conf\n"\
+"   echo \"option subnet 255.255.255.0\" >> /etc/udhcpd.conf\n"\
+"   echo \"opt router 192.168.43.1\" >> /etc/udhcpd.conf\n"\
+"   echo \"option lease 864000\" >> /etc/udhcpd.conf\n"\
+"   echo \"option 0x08 01020304\" >> /etc/udhcpd.conf\n"\
+"fi\n"
+
+#define SHELL_HOSTAPD_START \
+"#!/bin/sh\n"\
+"echo 1 > /proc/sys/net/ipv4/ip_forward\n"\
+"ifconfig wlan0 192.168.43.1 netmask 255.255.255.0 up\n"\
+"hostapd /etc/hostapd.conf -B\n"\
+"if ps | grep -v grep | grep udhcpd | grep wlan0 > /dev/null\n"\
+"then\n"\
+"    echo \"udhcpd is already running\"\n"\
+"else\n"\
+"   udhcpd /etc/udhcpd.conf\n"\
+"fi\n"
+
+#define SHELL_FIREWALL_START \
+"#!/bin/sh\n"\
+"iptables -t nat -A POSTROUTING -o %s -j MASQUERADE\n"\
+"iptables -A FORWARD -i %s -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT\n"\
+"iptables -A FORWARD -i wlan0 -o %s -j ACCEPT\n"
+
+#define SHELL_HOSTAPD_STOP \
+"killall hostapd\n"\
+"ifconfig wlan0 down\n"
+
+bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev)
+{
+    if(!network_dev || network_dev[0] == 0)
+        return false;
+
+    //network_dev 可用检查
+    // char ip[32] = {0};
+    // if(!_netCheck_getIP(name, ip) || ip[0] == 0)
+    //     return false;
+    // printf("%s : %s\n\n", name, ip);
+
+    //
+    system(SHELL_HOSTAPD_STOP);
+
+    char buff[10240];
+    int ret;
+
+    //创建文件 hostapd.conf
+    memset(buff, 0, 10240);
+    if(key && key[0])
+        ret = snprintf(buff, 10240, SHELL_HOSTAPD_CONF_CREATE, name, 2, key);
+    else
+        ret = snprintf(buff, 10240, SHELL_HOSTAPD_CONF_CREATE, name, 0, "00000000");
+    if(ret < 1 || ret >= 10240)
+        return false;
+    printf("system: 创建文件 hostapd.conf\n%s\n\n", buff);
+    system(buff);
+
+    //检查文件 udhcpd.conf
+    printf("system: 检查文件 udhcpd.conf\n%s\n\n", SHELL_UDHCPC_CONF_CHECK);
+    system(SHELL_UDHCPC_CONF_CHECK);
+
+    //启动 hostapd
+    printf("system: 启动 hostapd\n%s\n\n", SHELL_HOSTAPD_START);
+    system(SHELL_HOSTAPD_START);
+
+    //网络转发配置
+    memset(buff, 0, 10240);
+    ret = snprintf(buff, 10240, SHELL_FIREWALL_START, network_dev, network_dev, network_dev);
+    printf("system: 网络转发配置\n%s\n\n", buff);
+    system(buff);
+
+    //创建线程 每有新设备接入,自动回调
+    ;
+
+    //
+    if(wlan == NULL)
+        wlan = (Wlan_Struct *)calloc(1, sizeof(Wlan_Struct));
+    wlan->ap_run = true;
+    //
+    return true;
+}
+
+void ap_stop()
+{
+    if(wlan && wlan->ap_run)
+    {
+        system(SHELL_HOSTAPD_STOP);
+        wlan->ap_run = false;
+    }
 }

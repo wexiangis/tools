@@ -7,7 +7,8 @@ void wifi_scanCallback(void *object, int num, WlanScan_Info *info)
 {
     WlanScan_Info *tInfo = info;
     while(tInfo)
-    {
+    {   
+        printf("scan result : %d\n", num);
         printf("  ssid: %s\n", tInfo->ssid);
         printf("  frq: %d\n", tInfo->frq);
         printf("  power: %d\n", tInfo->power);
@@ -86,6 +87,23 @@ int main(void)
                         }
                     }
                 }
+            }
+            else if(scanfStr[0] == 'a')
+            {
+                if(scanfStr[1] == ':')
+                {
+                    char name[64] = {0}, key[32] = {0}, dev[32] = {0};
+                    if(sscanf(&scanfStr[2], "%[^:]%*[:]%[^:]%*[:]%[^:]", 
+                        name, key, dev) == 3)
+                    {
+                        if(ap_start(name, key, NULL, dev))
+                            printf("ap %s : %s / %s success\n", dev, name, key);
+                        else
+                            printf("ap %s : %s / %s failed\n", dev, name, key);
+                    }
+                }
+                else if(scanfStr[1] == 's')
+                    ap_stop();
             }
             //
             scanfStr[0] = 0;
