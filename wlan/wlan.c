@@ -15,8 +15,6 @@
 #include <sys/wait.h>
 #include <sys/ioctl.h>
 
-#include "wpa_ctrl.h"
-
 ///
 void wlan_delay_ms(unsigned int ms)
 {
@@ -91,6 +89,12 @@ void duplex_pclose(DuplexPipe *dp)
         dp->pid = 0;
     }
 }
+
+#if(WLAN_MODE == 1)
+
+
+
+#else
 
 //========== wlan -- wifi ==========
 
@@ -777,3 +781,5 @@ void ap_stop()
         wlan->ap_run = false;
     }
 }
+
+#endif

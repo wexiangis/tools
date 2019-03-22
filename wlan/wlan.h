@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <fcntl.h>
 
+#define WLAN_MODE 1
+
 //----- 全双工管道封装 -----
 
 typedef struct{
@@ -15,6 +17,14 @@ typedef struct{
 
 bool duplex_popen(DuplexPipe *dp, char *cmd);
 void duplex_pclose(DuplexPipe *dp);
+
+#if(WLAN_MODE == 1)
+
+#include "wpa_ctrl.h"
+
+
+
+#else
 
 //----- wlan -----
 
@@ -59,5 +69,7 @@ void wifi_init(void);
 // network_dev : 为热点提供上网源的网络设备,例如 eth0 ppp0
 bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev);
 void ap_stop();
+
+#endif
 
 #endif

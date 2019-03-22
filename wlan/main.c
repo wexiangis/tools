@@ -1,7 +1,80 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #include "wlan.h"
+
+#if(WLAN_MODE == 1)
+
+#define PATH_WLAN0 "/var/run/wpa_supplicant/wlan0"
+#define PATH_P2P_WLAN0 "/var/run/wpa_supplicant/p2p-dev-wlan0"
+
+#define CMD_LEN 128
+#define RSP_LEN 1024
+
+void callback(char *msg, size_t len)
+{
+    printf("callback: %d\n%s\n", len, msg);
+}
+
+int main(void)
+{
+    char cmd[CMD_LEN], rsp[RSP_LEN];
+    int cmdLen, rspLen;
+    struct wpa_ctrl *ctrl = NULL, *ctrl_p2p = NULL, *cl;
+    
+    //init
+    if((ctrl = wpa_ctrl_open(PATH_WLAN0)) == NULL)
+    {
+        fprintf(stderr, "open %s err\n", PATH_WLAN0);
+        return -1;
+    }
+    if((ctrl_p2p = wpa_ctrl_open(PATH_P2P_WLAN0)) == NULL)
+    {
+        fprintf(stderr, "open %s err\n", PATH_P2P_WLAN0);
+        return -1;
+    }
+    
+    //cmd test
+    fprintf(stdout, "cmd test begin:\n>");
+    while(1)
+    {
+        memset(cmd, 0, CMD_LEN);
+        if(fgets(cmd, CMD_LEN, stdin))
+        {
+            if(cmd[0] == '\n')
+            {
+                fputc('>', stdout);
+                fflush(stdout);
+                continue;
+            }
+            //
+            cmdLen = strlen(cmd) - 1;
+            cmd[cmdLen] = 0;
+            memset(rsp, 0, RSP_LEN);
+            rspLen = RSP_LEN;
+            //
+            if(strstr(cmd, "P2P"))
+                cl = ctrl_p2p;
+            else
+                cl = ctrl;
+            //
+            if(wpa_ctrl_request(cl, cmd, cmdLen, rsp, &rspLen, (void*)&callback) == 0)
+            {
+                fprintf(stdout, "%s>", rsp);
+                fflush(stdout);
+            }
+        }
+        //
+        sleep(1);
+    }
+    
+    return 0;
+}
+
+#elif(WLAN_MODE == 0)
 
 void wifi_scanCallback(void *object, int num, WlanScan_Info *info)
 {
@@ -111,4 +184,4 @@ int main(void)
     }
 	return 0;	
 }
-
+#endif
