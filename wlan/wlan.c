@@ -15,10 +15,13 @@
 #include <sys/wait.h>
 #include <sys/ioctl.h>
 
+#include "wpa_ctrl.h"
+
 ///
 void wlan_delay_ms(unsigned int ms)
 {
     struct timeval delay;
+    wpa_ctrl_open(NULL);
     if (ms > 1000)
     {
         delay.tv_sec = ms / 1000;
@@ -387,7 +390,7 @@ int wifi_connect(char *ssid, char *key)
     //添加网络
     if(!_wpa_cli_cmd2(wlan, ">", "add_network\n"))
     {
-        sprintf(stderr, "[add_network err !]\n");
+        fprintf(stderr, "[add_network err !]\n");
         return -1;
     }
     else
@@ -395,7 +398,7 @@ int wifi_connect(char *ssid, char *key)
     //设置名称
     if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d ssid \"%s\"\n", wlan->status.id, ssid))
     {
-        sprintf(stderr, "[set_network %d ssid \"%s\" err !]\n", wlan->status.id, ssid);
+        fprintf(stderr, "[set_network %d ssid \"%s\" err !]\n", wlan->status.id, ssid);
         return -1;
     }
     //
@@ -404,13 +407,13 @@ int wifi_connect(char *ssid, char *key)
         //设置密码
         if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d psk \"%s\"\n", wlan->status.id, key))
         {
-            sprintf(stderr, "[set_network %d psk \"%s\" err !]\n", wlan->status.id, key);
+            fprintf(stderr, "[set_network %d psk \"%s\" err !]\n", wlan->status.id, key);
             return -1;
         }
         //设置密码类型
         if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt WPA-PSK\n", wlan->status.id))
         {
-            sprintf(stderr, "[set_network %d key_mgmt WPA-PSK err !]\n", wlan->status.id);
+            fprintf(stderr, "[set_network %d key_mgmt WPA-PSK err !]\n", wlan->status.id);
             return -1;
         }
     }
@@ -419,7 +422,7 @@ int wifi_connect(char *ssid, char *key)
         //设置密码类型
         if(!_wpa_cli_cmd2(wlan, "OK", "set_network %d key_mgmt NONE\n", wlan->status.id))
         {
-            sprintf(stderr, "[set_network %d key_mgmt NONE err !]\n", wlan->status.id);
+            fprintf(stderr, "[set_network %d key_mgmt NONE err !]\n", wlan->status.id);
             return -1;
         }
     }
@@ -431,13 +434,13 @@ int wifi_connect(char *ssid, char *key)
     //启动连接
     if(!_wpa_cli_cmd2(wlan, "OK", "enable_network %d\n", wlan->status.id))
     {
-        sprintf(stderr, "[enable_network %d err !]\n", wlan->status.id);
+        fprintf(stderr, "[enable_network %d err !]\n", wlan->status.id);
         return -1;
     }
     //若有多条网络 设置使用当前
     if(!_wpa_cli_cmd2(wlan, "OK", "select_network %d\n", wlan->status.id))
     {
-        sprintf(stderr, "[select_network %d err !]\n", wlan->status.id);
+        fprintf(stderr, "[select_network %d err !]\n", wlan->status.id);
         return -1;
     }
     //
@@ -457,7 +460,7 @@ int wifi_disconnect(void)
     //移除当前连接
     if(!_wpa_cli_cmd2(wlan, "OK", "remove_network %d\n", wlan->status.id))
     {
-        sprintf(stderr, "[remove_network %d err !]\n", wlan->status.id);
+        fprintf(stderr, "[remove_network %d err !]\n", wlan->status.id);
         return -1;
     }
     return wlan->status.id;
@@ -476,7 +479,7 @@ Wlan_Status *wifi_status(void)
     
     if(!(ret = _wpa_cli_cmd2(wlan, ">", "status\n")))
     {
-        sprintf(stderr, "[status err !]\n");
+        fprintf(stderr, "[status err !]\n");
         return NULL;
     }
 
@@ -722,10 +725,7 @@ bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev)
         return false;
 
     //network_dev 可用检查
-    // char ip[32] = {0};
-    // if(!_netCheck_getIP(name, ip) || ip[0] == 0)
-    //     return false;
-    // printf("%s : %s\n\n", name, ip);
+    
 
     //
     system(SHELL_HOSTAPD_STOP);
@@ -741,21 +741,21 @@ bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev)
         ret = snprintf(buff, 10240, SHELL_HOSTAPD_CONF_CREATE, name, 0, "00000000");
     if(ret < 1 || ret >= 10240)
         return false;
-    printf("system: 创建文件 hostapd.conf\n%s\n\n", buff);
+    // printf("system: 创建文件 hostapd.conf\n%s\n\n", buff);
     system(buff);
 
     //检查文件 udhcpd.conf
-    printf("system: 检查文件 udhcpd.conf\n%s\n\n", SHELL_UDHCPC_CONF_CHECK);
+    // printf("system: 检查文件 udhcpd.conf\n%s\n\n", SHELL_UDHCPC_CONF_CHECK);
     system(SHELL_UDHCPC_CONF_CHECK);
 
     //启动 hostapd
-    printf("system: 启动 hostapd\n%s\n\n", SHELL_HOSTAPD_START);
+    // printf("system: 启动 hostapd\n%s\n\n", SHELL_HOSTAPD_START);
     system(SHELL_HOSTAPD_START);
 
     //网络转发配置
     memset(buff, 0, 10240);
     ret = snprintf(buff, 10240, SHELL_FIREWALL_START, network_dev, network_dev, network_dev);
-    printf("system: 网络转发配置\n%s\n\n", buff);
+    // printf("system: 网络转发配置\n%s\n\n", buff);
     system(buff);
 
     //创建线程 每有新设备接入,自动回调

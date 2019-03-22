@@ -8,15 +8,16 @@ LIBS += -L/friendlyArm/lib/ln/install-1/lib
 CFLAGS += -I/friendlyArm/lib/ln/install-3/include
 LIBS += -L/friendlyArm/lib/ln/install-1/lib
 CFLAGS += -I/friendlyArm/lib/openssl/install/include
-LIBS += -L/friendlyArm/lib/openssl/install/lib
-
+#LIBS += -L/friendlyArm/lib/openssl/install/lib
 
 cp ./defconfig ./.config
 
-
 Makefile:
-CC=xxx
-install_path=friendlyArm/lib/wpa_supplicant/install
-export LIBDIR ?= ${install_path}/lib/
-export INCDIR ?= ${install_path}/include/
-export BINDIR ?= ${install_path}/sbin/
+CC=arm-linux-gnueabihf-gcc
+
+export LIBDIR ?= /friendlyArm/lib/wpa_supplicant/install/lib/
+export INCDIR ?= /friendlyArm/lib/wpa_supplicant/install/include/
+export BINDIR ?= /friendlyArm/lib/wpa_supplicant/install/sbin/
+
+make -j4
+
