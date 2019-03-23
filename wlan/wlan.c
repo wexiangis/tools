@@ -90,13 +90,552 @@ void duplex_pclose(DuplexPipe *dp)
     }
 }
 
+//========== wlan -- wifi ==========
+
+#define SHELL_WPA_SUPPLICANT_START \
+"#!/bin/sh\n"\
+"if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
+"then\n"\
+"    echo \"wpa_supplicant is already running\"\n"\
+"else\n"\
+"   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
+"       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
+"       echo \"update_config=1\" >> /etc/wpa_supplicant.conf\n"\
+"   fi\n"\
+"    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant.conf -B\n"\
+"fi\n"
+
+/*"wpa_cli -iwlan0 terminate\n"\*/
+#define SHELL_WPA_SUPPLICANT_STOP \
+"#!/bin/sh\n"\
+"killall wpa_supplicant\n"\
+"ip link set wlan0 down\n"
+
+#define SHELL_UDHCPC_START \
+"#!/bin/sh\n"\
+"if ps | grep -v grep | grep udhcpc > /dev/null\n"\
+"then\n"\
+"    echo \"udhcpc is already running\"\n"\
+"else\n"\
+"    udhcpc -i wlan0 > /dev/null &\n"\
+"fi\n"
+
+#define SHELL_UDHCPC_STOP \
+"#!/bin/sh\n"\
+"killall udhcpc\n"\
+
 #if(WLAN_MODE == 1)
 
+#define RSP_LEN 10240
 
+#define PATH_WLAN0 "/var/run/wpa_supplicant/wlan0"
+#define PATH_P2P_WLAN0 "/var/run/wpa_supplicant/p2p-dev-wlan0"
+
+typedef struct{
+    //建立对 wpa_supplicant 通信的结构体
+    //[0] 用于指令发/收
+    //[1] 用于 wpa_supplicant 上报事件接收
+    struct wpa_ctrl *ctrl[2]; // wpa_ctrl_open("/var/run/wpa_supplicant/wlan0"); 获得
+    struct wpa_ctrl *ctrl_p2p[2]; // wpa_ctrl_open("/var/run/wpa_supplicant/p2p-dev-wlan0"); 获得
+    bool run;//用于告知各线程,工作是否继续
+
+    //----- wifi -----
+    bool scan;//在扫描
+    int timeout;//扫描超时 -1/表示一直扫描
+    void *object;
+    ScanCallback callback;
+
+    //----- ap -----
+    bool ap_run;
+
+    //----- p2p -----
+
+    //
+    Wlan_Status status;
+}Wlan_Struct;
+
+static Wlan_Struct *wlan = NULL;
+
+#define WLAN_ASSERT()  ((wlan && wlan->run)?true:false)
+
+//cmd request callback
+void _wlan_callback(char *msg, size_t len)
+{
+    printf("_wlan_callback: %d\n%s\n", len, msg);
+}
+
+//返回回复数据的长度
+int wlan_request(char *cmd, int cmdLen, char *rsp, size_t rspLen)
+{
+    if(!WLAN_ASSERT() || !cmd || !rsp || !rspLen)
+        return 0;
+    //
+    struct wpa_ctrl *cl;
+    if(strstr(cmd, "P2P"))
+        cl = wlan->ctrl_p2p[0];
+    else
+        cl = wlan->ctrl[0];
+    //
+    printf(">%s\n", cmd);
+    size_t retLen = rspLen;
+    if(wpa_ctrl_request(cl, cmd, cmdLen, rsp, &retLen, (void*)&_wlan_callback) == 0)
+    {
+        if(retLen)
+            return retLen;
+        else
+            return 0;
+    }
+    //
+    return 0;
+}
+
+//
+int wlan_request2(char *rsp, size_t rspLen, char *cmd, ...)
+{
+    if(!WLAN_ASSERT() || !cmd || !rsp || !rspLen)
+        return 0;
+    //
+    char buff[1024] = {0};
+    va_list ap;
+    va_start(ap , cmd);
+    vsnprintf(buff, 1024, cmd, ap);
+    va_end(ap);
+    //
+    return wlan_request(buff, strlen(buff), rsp, rspLen);
+}
+
+void _wifi_scan_info_release(WlanScan_Info *info)
+{
+    WlanScan_Info *in = info, *inNext;
+    while(in)
+    {
+        inNext = in->next;
+        free(in);
+        in = inNext;
+    }
+}
+
+WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
+{
+    WlanScan_Info *in = info, *next = NULL, tInfo;
+    char *p, keyType[512];
+    int i, total = 0;
+    if(str)
+    {
+        if((p = strstr(str, "bssid")))
+        {
+            //跳过1行
+            for(i = 0; *p && i < 1;){
+                if(*p++ == '\n')
+                    i += 1;
+            }
+            //逐行解析
+            while(*p)
+            {
+                if((*p >= '0' && *p <= '9') ||
+                    (*p >= 'a' && *p <= 'f') ||
+                    (*p >= 'A' && *p <= 'F'))
+                {
+                    memset(&tInfo, 0, sizeof(WlanScan_Info));
+                    memset(keyType, 0, 512);
+                    if(sscanf(p, "%s %d %d %s %[ -~]", 
+                        tInfo.bssid, &tInfo.frq, &tInfo.power, keyType, tInfo.ssid) == 5)
+                    {
+                        total += 1;
+                        //
+                        if(strncmp(keyType, "[ESS]", 5) == 0)
+                            tInfo.keyType = 0;
+                        else
+                            tInfo.keyType = 1;
+                        //
+                        if(!in)
+                            next = in = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
+                        else
+                            next = next->next = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
+                        memcpy(next, &tInfo, sizeof(WlanScan_Info));
+                        //
+                        printf("  ssid: %s\n", tInfo.ssid);
+                        printf("  frq: %d\n", tInfo.frq);
+                        printf("  power: %d\n", tInfo.power);
+                        printf("  keyType: %d %s\n", tInfo.keyType, keyType);
+                        printf("  bssid: %s\n\n", tInfo.bssid);
+                    }
+                }
+                //跳过该行
+                while(*p && *p++ != '\n');
+            }
+        }
+    }
+    //
+    if(num)
+        *num = total;
+    return in;
+}
+
+//
+void _wifi_scan_thr(void)
+{
+    if(!WLAN_ASSERT())
+        return;
+    //
+    int count = 0;
+    char rsp[RSP_LEN];
+    //
+    int num = 0;
+    WlanScan_Info *info = NULL;
+    //
+    while(wlan->run && wlan->scan)
+    {
+        //
+        memset(rsp, 0, RSP_LEN);
+        if(wlan_request("SCAN_RESULTS", 12, rsp, RSP_LEN) < 1)
+            break;
+        //
+        if(wlan->callback && (info = _wifi_scan_info(info, rsp, &num)))
+        {
+            wlan->callback(wlan->object, num, info);
+            _wifi_scan_info_release(info);
+            info = NULL;
+        }
+        //
+        if(--wlan->timeout == 0)
+            break;
+        //
+        wlan_delay_ms(500);
+        //
+        if(++count > 15)//每15秒重发一次 SCAN
+        {
+            count = 0;
+            memset(rsp, 0, RSP_LEN);
+            if(wlan_request("SCAN", 4, rsp, RSP_LEN) < 1)
+                break;
+        }
+        //
+        wlan_delay_ms(500);
+    }
+    wlan->scan = false;
+}
+
+//
+void wifi_scan(void *object, ScanCallback callback, int timeout)
+{
+    if(!WLAN_ASSERT())
+        return;
+    //
+    wlan->object = object;
+    wlan->callback = callback;
+    wlan->timeout = timeout;
+    //
+    char rsp[128];
+    if(wlan_request("SCAN", 4, rsp, sizeof(rsp)) < 1)
+        return;
+    //
+    if(!wlan->scan)
+    {
+        wlan->scan = true;
+        //
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
+        pthread_t th;
+        pthread_create(&th, &attr, (void *)&_wifi_scan_thr, NULL);
+        pthread_attr_destroy(&attr);
+    }
+}
+
+//
+void wifi_scanStop(void)
+{
+    if(!WLAN_ASSERT())
+        return;
+    //
+    wlan->scan = false;
+}
+
+//比较连接历史,返回id号
+int _wifi_connect_history_fit(char *ssid)
+{
+    char rsp[RSP_LEN] = {0}, name[128];
+    char *p;
+    int id, len = strlen(ssid);
+    //
+    if(wlan_request("LIST_NETWORKS", 13, rsp, RSP_LEN) > 0)
+    {
+        p = rsp;
+        while((p = strstr(p, "\n")))
+        {
+            if(*(++p) && sscanf(p, "%d %[^\t]", &id, name) == 2)
+            {
+                if(strlen(name) == len &&
+                    strncmp(ssid, name, len) == 0)
+                    return id;
+            }
+        }
+    }
+    //
+    return -1;
+}
+
+//
+int wifi_connect(char *ssid, char *key)
+{
+    if(!WLAN_ASSERT())
+        return -1;
+
+    //关闭自动ip
+    system(SHELL_UDHCPC_STOP);
+
+    char rsp[RSP_LEN];
+    int ret;
+
+    //获得id
+    int id = _wifi_connect_history_fit(ssid);
+    if(id < 0)
+    {
+        if((ret = wlan_request("ADD_NETWORK", 11, rsp, RSP_LEN)) < 1)
+            return -1;
+        rsp[ret] = 0;//截断
+        sscanf(rsp, "%d", &id);
+    }
+
+    //设置名称
+    if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d ssid \"%s\"", id, ssid) < 1 || 
+        rsp[0] != 'O' || rsp[1] != 'K')
+        goto failed;
+
+    //设置密码
+    if(key && key[0])
+    {
+        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt WPA-PSK", id) < 1 || 
+            rsp[0] != 'O' || rsp[1] != 'K')
+            goto failed;
+        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d psk \"%s\"", id, key) < 1 || 
+            rsp[0] != 'O' || rsp[1] != 'K')
+            goto failed;
+    }
+    else
+    {
+        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt NONE", id) < 1 || 
+            rsp[0] != 'O' || rsp[1] != 'K')
+            goto failed;
+    }
+
+    //启动自动ip
+    system(SHELL_UDHCPC_START);
+    
+    //
+    wlan_delay_ms(500);
+
+    //使能网络
+    if(wlan_request2(rsp, RSP_LEN, "ENABLE_NETWORK %d", id) < 1 || 
+        rsp[0] != 'O' || rsp[1] != 'K')
+        goto failed;
+
+    //切换网络
+    if(wlan_request2(rsp, RSP_LEN, "SELECT_NETWORK %d", id) < 1 || 
+        rsp[0] != 'O' || rsp[1] != 'K')
+        goto failed;
+
+    //
+    return id;
+
+failed:
+    wlan_request2(rsp, RSP_LEN, "REMOVE_NETWORK %d", id);
+    return -1;
+}
+
+void wifi_disconnect(void)
+{
+    if(!WLAN_ASSERT())
+        return;
+
+    //
+    char rsp[128];
+    wlan_request("DISCONNECT", 10, rsp, 128);
+
+    //关闭自动ip
+    system(SHELL_UDHCPC_STOP);
+}
+
+//
+Wlan_Status *wifi_status(void)
+{
+    if(!WLAN_ASSERT())
+        return NULL;
+    //
+    char rsp[RSP_LEN] = {0}, *p;
+    int ret;
+    //
+    if((ret = wlan_request("STATUS", 6, rsp, RSP_LEN) < 1))
+        return NULL;
+    rsp[ret] = 0;
+	//bssid
+    memset(wlan->status.bssid, 0, sizeof(wlan->status.bssid));
+    if((p = strstr(rsp, "bssid=")))
+    {
+        p += 6;
+        sscanf(p, "%s", wlan->status.bssid);
+        //ssid
+        memset(wlan->status.ssid, 0, sizeof(wlan->status.ssid));
+        if((p = strstr(p, "ssid=")))
+            sscanf(p+5, "%[ -~]", wlan->status.ssid);
+    }
+    //ip
+    memset(wlan->status.ip, 0, sizeof(wlan->status.ip));
+    if((p = strstr(rsp, "ip_address=")))
+    {
+        p += 11;
+        sscanf(p, "%s", wlan->status.ip);
+        //addr
+        memset(wlan->status.addr, 0, sizeof(wlan->status.addr));
+        if((p = strstr(p, "address=")))
+            sscanf(p+8, "%s", wlan->status.addr);
+    }
+    //p2p_dev_addr
+    memset(wlan->status.p2p_dev_addr, 0, sizeof(wlan->status.p2p_dev_addr));
+    if((p = strstr(rsp, "p2p_device_address=")))
+        sscanf(p+19, "%s", wlan->status.p2p_dev_addr);
+    //uuid
+    memset(wlan->status.uuid, 0, sizeof(wlan->status.uuid));
+    if((p = strstr(rsp, "uuid=")))
+        sscanf(p+5, "%s", wlan->status.uuid);
+    //frq
+    if((p = strstr(rsp, "freq=")))
+        sscanf(p+5, "%d", &wlan->status.frq);
+    //keyType
+    if((p = strstr(rsp, "key_mgmt=")))
+    {
+        p += 9;
+        if(strncmp(p, "NONE", 4) == 0)
+            wlan->status.keyType = 0;
+        else
+            wlan->status.keyType = 1;
+    }
+    //status
+    if((p = strstr(rsp, "wpa_state=")))
+    {
+        p += 10;
+        if(strncmp(p, "COMPLETED", 9) == 0)
+            wlan->status.status = 1;
+        else
+            wlan->status.status = 0;
+    }else
+        wlan->status.status = 0;
+    //
+    return &wlan->status;
+}
+
+//
+int wifi_signal(void)
+{
+    if(!WLAN_ASSERT())
+        return 0;
+    
+    char rsp[1024] = {0}, *p;
+    int sig = 0;
+    //
+    if(wlan_request("SIGNAL_POLL", 11, rsp, 1024) < 1)
+        return 0;
+    //
+    if((p = strstr(rsp, "RSSI")))
+        sscanf(p+5, "%d", &sig);
+    //
+    return sig;
+}
+
+//
+void _wlan_recv_thr(struct wpa_ctrl *ctrl)
+{
+    if(!WLAN_ASSERT())
+        return;
+    //
+    char rsp[RSP_LEN];
+    size_t rspLen;
+    int ret;
+    //注册监听
+    if(wpa_ctrl_attach(ctrl) == 0)
+    {
+        while(wlan->run)
+        {
+            memset(rsp, 0, RSP_LEN);
+            rspLen = RSP_LEN;//要告知对方 rsp 可用范围
+            ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
+            if(ret == 0 && rspLen > 0)
+                printf("recv: %d\n%s\n", rspLen, rsp);
+            wlan_delay_ms(200);
+        }
+        //注销监听
+        wpa_ctrl_detach(ctrl);
+    }
+    //
+    printf("_wlan_recv_thr exit ...\n");
+}
+
+//
+void wifi_exit(void)
+{
+    if(wlan)
+    {
+        if(wlan->run)
+        {
+            wlan->run = false;
+
+            wlan_delay_ms(200);
+
+            if(wlan->ctrl[0]) wpa_ctrl_close(wlan->ctrl[0]);
+            if(wlan->ctrl[1]) wpa_ctrl_close(wlan->ctrl[1]);
+            if(wlan->ctrl_p2p[0]) wpa_ctrl_close(wlan->ctrl_p2p[0]);
+            if(wlan->ctrl_p2p[1]) wpa_ctrl_close(wlan->ctrl_p2p[1]);
+
+            wlan->ctrl[0] = wlan->ctrl[1] = NULL;
+            wlan->ctrl_p2p[0] = wlan->ctrl_p2p[1] = NULL;
+        }
+
+        free(wlan);
+        wlan = NULL;
+    }
+    //kill : udhcpc, wpa_supplicant
+    system(SHELL_WPA_SUPPLICANT_STOP);
+    system(SHELL_UDHCPC_STOP);
+}
+
+//
+void wifi_init(void)
+{
+    //start : wpa_supplicant
+    system(SHELL_WPA_SUPPLICANT_START);
+    
+    if(!wlan)
+        wlan = (Wlan_Struct *)calloc(1, sizeof(Wlan_Struct));
+    //
+    if(!wlan->ctrl[0])
+        wlan->ctrl[0] = wpa_ctrl_open(PATH_WLAN0);
+    if(!wlan->ctrl[1])
+        wlan->ctrl[1] = wpa_ctrl_open(PATH_WLAN0);
+    if(!wlan->ctrl_p2p[0])
+        wlan->ctrl_p2p[0] = wpa_ctrl_open(PATH_P2P_WLAN0);
+    if(!wlan->ctrl_p2p[1])
+        wlan->ctrl_p2p[1] = wpa_ctrl_open(PATH_P2P_WLAN0);
+    //
+    if(!wlan->run)
+    {
+        wlan->run = true;
+        //
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
+        //开线程 接收 wpa_supplicant 上报事件
+        pthread_t th0, th1;
+        if(wlan->ctrl[1])
+            pthread_create(&th0, &attr, (void *)&_wlan_recv_thr, (void *)wlan->ctrl[1]);
+        if(wlan->ctrl_p2p[1])
+            pthread_create(&th1, &attr, (void *)&_wlan_recv_thr, (void *)wlan->ctrl_p2p[1]);
+        //
+        pthread_attr_destroy(&attr);
+    }
+}
 
 #else
-
-//========== wlan -- wifi ==========
 
 #define WPA_CLI_CMD_LEN    512
 #define WPA_CLI_RESULT_LEN    10240
@@ -127,36 +666,6 @@ typedef struct{
 }Wlan_Struct;
 
 static Wlan_Struct *wlan = NULL;
-
-#define SHELL_WPA_SUPPLICANT_START \
-"#!/bin/sh\n"\
-"if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
-"then\n"\
-"    echo \"wpa_supplicant is already running\"\n"\
-"else\n"\
-"   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
-"       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
-"   fi\n"\
-"    wpa_supplicant -iwlan0 -Dnl80211 -c/etc/wpa_supplicant.conf -B\n"\
-"fi\n"
-
-#define SHELL_WPA_SUPPLICANT_STOP \
-"#!/bin/sh\n"\
-"wpa_cli -iwlan0 terminate\n"\
-"ip link set wlan0 down\n"
-
-#define SHELL_UDHCPC_START \
-"#!/bin/sh\n"\
-"if ps | grep -v grep | grep udhcpc > /dev/null\n"\
-"then\n"\
-"    echo \"udhcpc is already running\"\n"\
-"else\n"\
-"    udhcpc -i wlan0 > /dev/null &\n"\
-"fi\n"
-
-#define SHELL_UDHCPC_STOP \
-"#!/bin/sh\n"\
-"killall udhcpc\n"\
 
 #define SHELL_WPA_CLI  "wpa_cli -i wlan0"
 
@@ -251,7 +760,7 @@ char *_wpa_cli_cmd2(Wlan_Struct *wlan, char *expect, char *cmd, ...)
     return NULL;
 }
 
-void _wpa_scan_info_release(WlanScan_Info *info)
+void _wifi_scan_info_release(WlanScan_Info *info)
 {
     WlanScan_Info *in = info, *inNext;
     while(in)
@@ -262,7 +771,7 @@ void _wpa_scan_info_release(WlanScan_Info *info)
     }
 }
 
-WlanScan_Info *_wpa_scan_info(WlanScan_Info *info, char *str, int *num)
+WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
 {
     WlanScan_Info *in = info, *next, tInfo;
     char *p, keyType[512];
@@ -335,10 +844,10 @@ void _thr_wpa_cli_scan(Wlan_Struct *wlan)
             //发指令
             if((ret = _wpa_cli_cmd2(wlan, ">", "scan_result\n")))
             {
-                if(wlan->scanCallback && (info = _wpa_scan_info(info, ret, &num)))
+                if(wlan->scanCallback && (info = _wifi_scan_info(info, ret, &num)))
                 {
                     wlan->scanCallback(wlan->scanObject, num, info);
-                    _wpa_scan_info_release(info);
+                    _wifi_scan_info_release(info);
                     info = NULL;
                 }
             }
@@ -669,6 +1178,8 @@ void wifi_init(void)
     }
 }
 
+#endif
+
 //========== wlan -- ap热点 ==========
 
 #define SHELL_HOSTAPD_CONF_CREATE \
@@ -782,4 +1293,3 @@ void ap_stop()
     }
 }
 
-#endif
