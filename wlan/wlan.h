@@ -19,8 +19,6 @@ void duplex_pclose(DuplexPipe *dp);
 
 //----- wlan -----
 
-#define WLAN_MODE 1
-
 #include "wpa_ctrl.h"
 
 typedef struct WlanScanInfo{
@@ -43,7 +41,7 @@ typedef struct{
 	char addr[32];
 	char p2p_dev_addr[32];
 	char uuid[128];
-	char status;//0/关闭 1/开启
+	char status;//0/关闭 1/正在连接 2/连接正常
 }Wlan_Status;
 
 //wifi 扫描每新增一条网络就回调该函数,由用户自行处理新增的网络
@@ -52,31 +50,17 @@ typedef struct{
 //	void wifi_scanCallback(void *object, int num, WlanScan_Info *info);
 typedef void (*ScanCallback)(void *object, int num, WlanScan_Info *info);
 
-#if(WLAN_MODE == 1)
-
 void wifi_scan(void *object, ScanCallback callback, int timeout);
 void wifi_scanStop(void);
 int wifi_connect(char *ssid, char *key);
 void wifi_disconnect(void);
 Wlan_Status *wifi_status(void);
-int wifi_signal(void);//返回-33dbm 返回0为失败
+int wifi_signal(void);//返回-33dbm 0表示失败或没有信号
+int wifi_signalPower(void);//使用0~100来表示强度
 int wlan_request(char *cmd, int cmdLen, char *rsp, size_t rspLen);//指令透传
 int wlan_request2(char *rsp, size_t rspLen, char *cmd, ...);//像printf()函数一样编辑cmd
 void wifi_exit(void);
 void wifi_init(void);
-
-#else
-
-void wifi_scan(void *object, ScanCallback callback, int timeout);
-void wifi_scanStop(void);
-int wifi_connect(char *ssid, char *key);
-int wifi_disconnect(void);
-Wlan_Status *wifi_status(void);
-char *wifi_through(char *cmd);//指令透传
-void wifi_exit(void);
-void wifi_init(void);
-
-#endif
 
 // network_dev : 为热点提供上网源的网络设备,例如 eth0 ppp0
 bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev);
