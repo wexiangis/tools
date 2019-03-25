@@ -52,18 +52,30 @@ typedef void (*ScanCallback)(void *object, int num, WlanScan_Info *info);
 
 void wifi_scan(void *object, ScanCallback callback, int timeout);
 void wifi_scanStop(void);
+
 int wifi_connect(char *ssid, char *key);
 void wifi_disconnect(void);
+
 Wlan_Status *wifi_status(void);
 int wifi_signal(void);//返回-33dbm 0表示失败或没有信号
 int wifi_signalPower(void);//使用0~100来表示强度
-int wlan_request(char *cmd, int cmdLen, char *rsp, size_t rspLen);//指令透传
-int wlan_request2(char *rsp, size_t rspLen, char *cmd, ...);//像printf()函数一样编辑cmd
+
 void wifi_exit(void);
 void wifi_init(void);
 
+int wifi_through(char *rsp, size_t rspLen, char *cmd, ...);
+int wifi_p2p_through(char *rsp, size_t rspLen, char *cmd, ...);
+int ap_through(char *rsp, size_t rspLen, char *cmd, ...);
+
+typedef struct WlanApList{
+	char addr[32];//接入设备的物理地址
+	int time;//连接时长 秒
+	struct WlanApList *next;
+}WlanAp_List;
+//获取接入设备
+WlanAp_List *ap_list(int *total);
 // network_dev : 为热点提供上网源的网络设备,例如 eth0 ppp0
-bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev);
+bool ap_start(char *name, char *key, char *network_dev);
 void ap_stop();
 
 #endif

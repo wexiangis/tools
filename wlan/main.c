@@ -32,6 +32,7 @@ int main(void)
 #define RSP_LEN 10240
     char cmd[CMD_LEN], rsp[RSP_LEN];
     int ret;
+    bool sw = false;
     //
     wifi_init();
     //
@@ -41,39 +42,80 @@ int main(void)
         memset(cmd, 0, CMD_LEN);
         if(fgets(cmd, CMD_LEN, stdin))
         {
-            if(cmd[0] == 'Q' || cmd[0] == 'q')
-                break;
-            else if(cmd[0] == '1')
+            if(cmd[0] == '1')
                 wifi_scan(NULL, (ScanCallback)&wifi_scanCallback, 3);
             else if(cmd[0] == '2')
                 wifi_scanStop();
             else if(cmd[0] == '3')
-                ret = wlan_request("STATUS", 6, rsp, RSP_LEN);
+                ret = wifi_through(rsp, RSP_LEN, "STATUS");
             else if(cmd[0] == '4')
-                ret = wlan_request("LIST_NETWORKS", 13, rsp, RSP_LEN);
+                ret = wifi_through(rsp, RSP_LEN, "LIST_NETWORKS");
             else if(cmd[0] == '5')
-                ret = wlan_request("SIGNAL_POLL", 11, rsp, RSP_LEN);
+                ret = wifi_through(rsp, RSP_LEN, "SIGNAL_POLL");
             else if(cmd[0] == '9')
-                ret = wlan_request("SAVE_CONFIG", 11, rsp, RSP_LEN);
+                ret = wifi_through(rsp, RSP_LEN, "SAVE_CONFIG");
             else if(cmd[0] == ':')
-                ret = wlan_request(&cmd[1], strlen(cmd)-2, rsp, RSP_LEN);//strlen(cmd)-2是去掉回车
-            else if(cmd[0] == 'c' || cmd[0] == 'C')
-                wifi_connect("AP-QBOX10", "12345678");
-            else if(cmd[0] == 'd' || cmd[0] == 'D')
-                wifi_disconnect();
-            else if(cmd[0] == 's' || cmd[0] == 'S')
-                printf("<signal : %ddbm>\n", wifi_signal());
-            else if(cmd[0] == '0')
-                break;
+            {
+                if(cmd[1] == 'q' || cmd[1] == 'Q')
+                    break;
+                else if(cmd[1] == 's' || cmd[1] == 'S')
+                {
+                    sw = !sw;
+                    if(sw)
+                    {
+                        wifi_exit();
+                        if(ap_start("test-ap", "12345678", "ppp0"))
+                            printf("ap_start success [test-ap key:12345678]\n");
+                    }
+                    else
+                    {
+                        ap_stop();
+                        wifi_init();
+                        printf("wifi_init success\n");
+                    }
+                }
+                else if(sw)
+                {
+                    if(cmd[1] == 'a' || cmd[1] == 'A')
+                    {
+                        WlanAp_List *retList = NULL;
+                        int total = 0;
+                        retList = ap_list(&total);
+                        while(retList)
+                        {
+                            printf("access: %s [%d]\n", retList->addr, retList->time);
+                            retList = retList->next;
+                        }
+                    }
+                }
+                else
+                {
+
+                }
+            }
+            else if(cmd[0] != '\n')
+            {
+                cmd[strlen(cmd) - 1] = 0;//去掉回车
+                if(sw)
+                    ret = ap_through(rsp, RSP_LEN, cmd);
+                else
+                {
+                    if(cmd[0] == 'P' && cmd[1] == '2' && cmd[2] == 'P')
+                        ret = wifi_p2p_through(rsp, RSP_LEN, cmd);
+                    else
+                        ret = wifi_through(rsp, RSP_LEN, cmd);
+                }
+            }
             //
             if(ret > 0)
             {
                 rsp[ret] = 0;
-                printf("<wlan_request: %d>\n%s\n", ret, rsp);
+                printf("<cmd_through: %d>\n%s\n", ret, rsp);
             }
         }
     }
     //
+    ap_stop();
     wifi_exit();
     //
     return 0;

@@ -21,3 +21,21 @@ export BINDIR ?= /friendlyArm/lib/wpa_supplicant/install/sbin/
 
 make -j4
 
+##################
+
+#wwx add
+CONFIG_BUILD_WPA_CLIENT_SO=y
+
+CFLAGS += -I/friendlyArm/lib/ln/install-1/include
+LIBS += -L/friendlyArm/lib/ln/install-1/lib
+
+CFLAGS += -I/friendlyArm/lib/ln/install-3/include
+#LIBS += -L/friendlyArm/lib/ln/install-1/lib
+LIBS += -L/mysdb/myGitLib/test/Qbox10-system/rootfs/usr/lib
+
+#CFLAGS += -I/friendlyArm/lib/openssl/install/include
+CFLAGS += -I/usr/local/arm/gcc-4.9.4-arm-buildroot-linux-gnueabihf/arm-buildroot-linux-gnueabihf/sysroot/usr/include
+#LIBS += -L/friendlyArm/lib/openssl/install/lib
+
+P2P_XXX=y
+

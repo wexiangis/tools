@@ -90,7 +90,7 @@ void duplex_pclose(DuplexPipe *dp)
     }
 }
 
-//========== wlan -- wifi ==========
+//========== wlan ==========
 
 #define SHELL_WPA_SUPPLICANT_START \
 "#!/bin/sh\n"\
@@ -144,6 +144,8 @@ typedef struct{
     ScanCallback callback;
 
     //----- ap -----
+    struct wpa_ctrl *ctrl_ap[2]; // wpa_ctrl_open("/var/run/hostapd/wlan0"); 获得
+    WlanAp_List *list;
     bool ap_run;
 
     //----- p2p -----
@@ -154,47 +156,66 @@ typedef struct{
 
 static Wlan_Struct *wlan = NULL;
 
-#define WLAN_ASSERT()  ((wlan && wlan->run)?true:false)
-
 //cmd request callback
 void _wlan_callback(char *msg, size_t len)
 {
-    //printf("_wlan_callback: %d\n%s\n", len, msg);
+    printf("_wlan_callback: %d\n%s\n", len, msg);
 }
 
 //返回回复数据的长度
-int wlan_request(char *cmd, int cmdLen, char *rsp, size_t rspLen)
+int wlan_request(struct wpa_ctrl *ctrl, char *cmd, int cmdLen, char *rsp, size_t rspLen)
 {
-    if(!WLAN_ASSERT() || !cmd || !rsp || !rspLen)
+    if(!wlan || !ctrl || !cmd || !rsp || !rspLen)
         return 0;
-    //
-    struct wpa_ctrl *cl;
-    if(strstr(cmd, "P2P"))
-        cl = wlan->ctrl_p2p[0];
-    else
-        cl = wlan->ctrl[0];
-    //
-    if(cl)
+    // printf(">%s\n", cmd);
+    size_t retLen = rspLen;
+    if(wpa_ctrl_request(ctrl, cmd, cmdLen, rsp, &retLen, (void*)&_wlan_callback) == 0)
     {
-        // printf(">%s\n", cmd);
-        size_t retLen = rspLen;
-        if(wpa_ctrl_request(cl, cmd, cmdLen, rsp, &retLen, (void*)&_wlan_callback) == 0)
-        {
-            // printf("%s\n<len/%d>\n", rsp, retLen);
-            if(retLen)
-                return retLen;
-            else
-                return 0;
-        }
+        // printf("%s\n", rsp);
+        if(retLen)
+            return retLen;
+        else
+            return 0;
     }
     //
     return 0;
 }
 
+//========== wifi & p2p ==========
+
+#define WIFI_ASSERT()  ((wlan && wlan->run)?true:false)
+
 //
-int wlan_request2(char *rsp, size_t rspLen, char *cmd, ...)
+void _wlan_recv_thr(struct wpa_ctrl *ctrl)
 {
-    if(!WLAN_ASSERT() || !cmd || !rsp || !rspLen)
+    if(!WIFI_ASSERT() || !ctrl)
+        return;
+    //
+    char rsp[RSP_LEN];
+    size_t rspLen;
+    int ret;
+    //注册监听
+    if(wpa_ctrl_attach(ctrl) == 0)
+    {
+        while(wlan->run)
+        {
+            memset(rsp, 0, RSP_LEN);
+            rspLen = RSP_LEN;//要告知对方 rsp 可用范围
+            ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
+            if(ret == 0 && rspLen > 0)
+                printf("recv: %d\n%s\n", rspLen, rsp);
+            wlan_delay_ms(200);
+        }
+        //注销监听
+        wpa_ctrl_detach(ctrl);
+    }
+    //
+    printf("_wlan_recv_thr exit ...\n");
+}
+
+int wifi_through(char *rsp, size_t rspLen, char *cmd, ...)
+{
+    if(!WIFI_ASSERT() || !cmd || !rsp || !rspLen)
         return 0;
     //
     char buff[1024] = {0};
@@ -203,7 +224,21 @@ int wlan_request2(char *rsp, size_t rspLen, char *cmd, ...)
     vsnprintf(buff, 1024, cmd, ap);
     va_end(ap);
     //
-    return wlan_request(buff, strlen(buff), rsp, rspLen);
+    return wlan_request(wlan->ctrl[0], buff, strlen(buff), rsp, rspLen);
+}
+
+int wifi_p2p_through(char *rsp, size_t rspLen, char *cmd, ...)
+{
+    if(!WIFI_ASSERT() || !cmd || !rsp || !rspLen)
+        return 0;
+    //
+    char buff[1024] = {0};
+    va_list ap;
+    va_start(ap , cmd);
+    vsnprintf(buff, 1024, cmd, ap);
+    va_end(ap);
+    //
+    return wlan_request(wlan->ctrl_p2p[0], buff, strlen(buff), rsp, rspLen);
 }
 
 void _wifi_scan_info_release(WlanScan_Info *info)
@@ -277,7 +312,7 @@ WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
 //
 void _wifi_scan_thr(void)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return;
     //
     int count = 0;
@@ -290,7 +325,7 @@ void _wifi_scan_thr(void)
     {
         //
         memset(rsp, 0, RSP_LEN);
-        if(wlan_request("SCAN_RESULTS", 12, rsp, RSP_LEN) < 1)
+        if(wlan_request(wlan->ctrl[0], "SCAN_RESULTS", 12, rsp, RSP_LEN) < 1)
             break;
         //
         if(wlan->callback && (info = _wifi_scan_info(info, rsp, &num)))
@@ -309,7 +344,7 @@ void _wifi_scan_thr(void)
         {
             count = 0;
             memset(rsp, 0, RSP_LEN);
-            if(wlan_request("SCAN", 4, rsp, RSP_LEN) < 1)
+            if(wlan_request(wlan->ctrl[0], "SCAN", 4, rsp, RSP_LEN) < 1)
                 break;
         }
         //
@@ -321,7 +356,7 @@ void _wifi_scan_thr(void)
 //
 void wifi_scan(void *object, ScanCallback callback, int timeout)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return;
     //
     wlan->object = object;
@@ -329,7 +364,7 @@ void wifi_scan(void *object, ScanCallback callback, int timeout)
     wlan->timeout = timeout;
     //
     char rsp[128];
-    if(wlan_request("SCAN", 4, rsp, sizeof(rsp)) < 1)
+    if(wlan_request(wlan->ctrl[0], "SCAN", 4, rsp, sizeof(rsp)) < 1)
         return;
     //
     if(!wlan->scan)
@@ -348,7 +383,7 @@ void wifi_scan(void *object, ScanCallback callback, int timeout)
 //
 void wifi_scanStop(void)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return;
     //
     wlan->scan = false;
@@ -361,7 +396,7 @@ int _wifi_connect_history_fit(char *ssid)
     char *p;
     int id, len = strlen(ssid);
     //
-    if(wlan_request("LIST_NETWORKS", 13, rsp, RSP_LEN) > 0)
+    if(wlan_request(wlan->ctrl[0], "LIST_NETWORKS", 13, rsp, RSP_LEN) > 0)
     {
         p = rsp;
         while((p = strstr(p, "\n")))
@@ -381,7 +416,7 @@ int _wifi_connect_history_fit(char *ssid)
 //
 int wifi_connect(char *ssid, char *key)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return -1;
 
     //关闭自动ip
@@ -394,30 +429,30 @@ int wifi_connect(char *ssid, char *key)
     int id = _wifi_connect_history_fit(ssid);
     if(id < 0)
     {
-        if((ret = wlan_request("ADD_NETWORK", 11, rsp, RSP_LEN)) < 1)
+        if((ret = wlan_request(wlan->ctrl[0], "ADD_NETWORK", 11, rsp, RSP_LEN)) < 1)
             return -1;
         rsp[ret] = 0;//截断
         sscanf(rsp, "%d", &id);
     }
 
     //设置名称
-    if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d ssid \"%s\"", id, ssid) < 1 || 
+    if(wifi_through(rsp, RSP_LEN, "SET_NETWORK %d ssid \"%s\"", id, ssid) < 1 || 
         rsp[0] != 'O' || rsp[1] != 'K')
         goto failed;
 
     //设置密码
     if(key && key[0])
     {
-        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt WPA-PSK", id) < 1 || 
+        if(wifi_through(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt WPA-PSK", id) < 1 || 
             rsp[0] != 'O' || rsp[1] != 'K')
             goto failed;
-        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d psk \"%s\"", id, key) < 1 || 
+        if(wifi_through(rsp, RSP_LEN, "SET_NETWORK %d psk \"%s\"", id, key) < 1 || 
             rsp[0] != 'O' || rsp[1] != 'K')
             goto failed;
     }
     else
     {
-        if(wlan_request2(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt NONE", id) < 1 || 
+        if(wifi_through(rsp, RSP_LEN, "SET_NETWORK %d key_mgmt NONE", id) < 1 || 
             rsp[0] != 'O' || rsp[1] != 'K')
             goto failed;
     }
@@ -429,12 +464,12 @@ int wifi_connect(char *ssid, char *key)
     wlan_delay_ms(500);
 
     //使能网络
-    if(wlan_request2(rsp, RSP_LEN, "ENABLE_NETWORK %d", id) < 1 || 
+    if(wifi_through(rsp, RSP_LEN, "ENABLE_NETWORK %d", id) < 1 || 
         rsp[0] != 'O' || rsp[1] != 'K')
         goto failed;
 
     //切换网络
-    if(wlan_request2(rsp, RSP_LEN, "SELECT_NETWORK %d", id) < 1 || 
+    if(wifi_through(rsp, RSP_LEN, "SELECT_NETWORK %d", id) < 1 || 
         rsp[0] != 'O' || rsp[1] != 'K')
         goto failed;
 
@@ -442,18 +477,18 @@ int wifi_connect(char *ssid, char *key)
     return id;
 
 failed:
-    wlan_request2(rsp, RSP_LEN, "REMOVE_NETWORK %d", id);
+    wifi_through(rsp, RSP_LEN, "REMOVE_NETWORK %d", id);
     return -1;
 }
 
 void wifi_disconnect(void)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return;
 
     //
     char rsp[128];
-    wlan_request("DISCONNECT", 10, rsp, 128);
+    wlan_request(wlan->ctrl[0], "DISCONNECT", 10, rsp, 128);
 
     //关闭自动ip
     system(SHELL_UDHCPC_STOP);
@@ -462,12 +497,12 @@ void wifi_disconnect(void)
 //
 Wlan_Status *wifi_status(void)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return NULL;
     //
     char rsp[RSP_LEN] = {0}, *p;
     //
-    if(wlan_request("STATUS", 6, rsp, RSP_LEN) < 1)
+    if(wlan_request(wlan->ctrl[0], "STATUS", 6, rsp, RSP_LEN) < 1)
         return NULL;
 	//bssid
     memset(wlan->status.bssid, 0, sizeof(wlan->status.bssid));
@@ -530,13 +565,13 @@ Wlan_Status *wifi_status(void)
 //
 int wifi_signal(void)
 {
-    if(!WLAN_ASSERT())
+    if(!WIFI_ASSERT())
         return 0;
     
     char rsp[1024] = {0}, *p;
     int sig = 0;
     //
-    if(wlan_request("SIGNAL_POLL", 11, rsp, 1024) < 1)
+    if(wlan_request(wlan->ctrl[0], "SIGNAL_POLL", 11, rsp, 1024) < 1)
         return 0;
     //
     if((p = strstr(rsp, "RSSI")))
@@ -554,34 +589,6 @@ int wifi_signalPower(void)
     else sig = sig + 130;
     //
     return sig;
-}
-
-//
-void _wlan_recv_thr(struct wpa_ctrl *ctrl)
-{
-    if(!WLAN_ASSERT())
-        return;
-    //
-    char rsp[RSP_LEN];
-    size_t rspLen;
-    int ret;
-    //注册监听
-    if(wpa_ctrl_attach(ctrl) == 0)
-    {
-        while(wlan->run)
-        {
-            memset(rsp, 0, RSP_LEN);
-            rspLen = RSP_LEN;//要告知对方 rsp 可用范围
-            ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
-            if(ret == 0 && rspLen > 0)
-                ;//printf("recv: %d\n%s\n", rspLen, rsp);
-            wlan_delay_ms(200);
-        }
-        //注销监听
-        wpa_ctrl_detach(ctrl);
-    }
-    //
-    printf("_wlan_recv_thr exit ...\n");
 }
 
 //
@@ -604,8 +611,8 @@ void wifi_exit(void)
             wlan->ctrl_p2p[0] = wlan->ctrl_p2p[1] = NULL;
         }
 
-        free(wlan);
-        wlan = NULL;
+        // free(wlan);
+        // wlan = NULL;
     }
     //kill : udhcpc, wpa_supplicant
     system(SHELL_WPA_SUPPLICANT_STOP);
@@ -702,13 +709,124 @@ void wifi_init(void)
 "killall hostapd\n"\
 "ifconfig wlan0 down\n"
 
-bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev)
+#define PATH_AP_WLAN0 "/var/run/hostapd/wlan0"
+
+//
+void _wlan_ap_recv_thr(struct wpa_ctrl *ctrl)
+{
+    if(!wlan || !ctrl)
+        return;
+    //
+    char rsp[RSP_LEN];
+    size_t rspLen;
+    int ret;
+    //注册监听
+    if(wpa_ctrl_attach(ctrl) == 0)
+    {
+        while(wlan->ap_run)
+        {
+            memset(rsp, 0, RSP_LEN);
+            rspLen = RSP_LEN;//要告知对方 rsp 可用范围
+            ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
+            if(ret == 0 && rspLen > 0)
+                printf("recv: %d\n%s\n", rspLen, rsp);
+            wlan_delay_ms(200);
+        }
+        //注销监听
+        wpa_ctrl_detach(ctrl);
+    }
+    //
+    printf("_wlan_ap_recv_thr exit ...\n");
+}
+
+int ap_through(char *rsp, size_t rspLen, char *cmd, ...)
+{
+    if(!wlan || !wlan->ap_run || !cmd || !rsp || !rspLen)
+        return 0;
+    //
+    char buff[1024] = {0};
+    va_list ap;
+    va_start(ap , cmd);
+    vsnprintf(buff, 1024, cmd, ap);
+    va_end(ap);
+    //
+    return wlan_request(wlan->ctrl_ap[0], buff, strlen(buff), rsp, rspLen);
+}
+
+WlanAp_List *ap_list(int *total)
+{
+    if(!wlan || !wlan->ap_run)
+        return NULL;
+    //
+    char rsp[RSP_LEN] = {0}, *p;
+    int ret, count = 0;
+    WlanAp_List *current = wlan->list, *next;
+    //清空
+    while(current)
+    {
+        next = current->next;
+        free(current);
+        current = next;
+    }
+    //
+    if((ret = ap_through(rsp, RSP_LEN, "STA-FIRST")) > 11 && 
+        (p = strstr(rsp, "connected_time=")))
+    {
+        wlan->list = next = (WlanAp_List *)calloc(1, sizeof(WlanAp_List));
+        sscanf(rsp, "%s", next->addr);
+        sscanf(p+15, "%d", &next->time);
+        count++;
+        memset(rsp, 0, RSP_LEN);
+        //
+        while(count < 50 && 
+            (ret = ap_through(rsp, RSP_LEN, "STA-NEXT %s", next->addr)) > 11 && 
+            (p = strstr(rsp, "connected_time=")))
+        {
+            next = next->next = (WlanAp_List *)calloc(1, sizeof(WlanAp_List));
+            rsp[ret] = 0;
+            sscanf(rsp, "%s", next->addr);
+            sscanf(p+15, "%d", &next->time);
+            count++;
+            memset(rsp, 0, RSP_LEN);
+        }
+    }
+    //
+    if(total)
+        *total = count;
+    //
+    return wlan->list;
+}
+
+void ap_stop()
+{
+    if(wlan)
+    {
+        if(wlan->ap_run)
+        {
+            wlan->ap_run = false;
+
+            wlan_delay_ms(200);
+
+            if(wlan->ctrl_ap[0]) wpa_ctrl_close(wlan->ctrl_ap[0]);
+            if(wlan->ctrl_ap[1]) wpa_ctrl_close(wlan->ctrl_ap[1]);
+
+            wlan->ctrl_ap[0] = wlan->ctrl_ap[1] = NULL;
+        }
+
+        system(SHELL_HOSTAPD_STOP);
+        wlan->ap_run = false;
+        
+        // free(wlan);
+        // wlan = NULL;
+    }
+}
+
+bool ap_start(char *name, char *key, char *network_dev)
 {
     if(!network_dev || network_dev[0] == 0)
         return false;
 
     //network_dev 可用检查
-    
 
     //
     system(SHELL_HOSTAPD_STOP);
@@ -741,23 +859,29 @@ bool ap_start(char *name, char *key, ScanCallback callback, char *network_dev)
     // printf("system: 网络转发配置\n%s\n\n", buff);
     system(buff);
 
-    //创建线程 每有新设备接入,自动回调
-    ;
-
     //
     if(wlan == NULL)
         wlan = (Wlan_Struct *)calloc(1, sizeof(Wlan_Struct));
-    wlan->ap_run = true;
+    if(!wlan->ctrl_ap[0])
+        wlan->ctrl_ap[0] = wpa_ctrl_open(PATH_AP_WLAN0);
+    if(!wlan->ctrl_ap[1])
+        wlan->ctrl_ap[1] = wpa_ctrl_open(PATH_AP_WLAN0);
+    //
+    if(!wlan->ap_run)
+    {
+        wlan->ap_run = true;
+        //
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);//禁用线程同步, 线程运行结束后自动释放
+        //开线程 接收 hostapd 上报事件
+        pthread_t th0;
+        if(wlan->ctrl_ap[1])
+            pthread_create(&th0, &attr, (void *)&_wlan_ap_recv_thr, (void *)wlan->ctrl_ap[1]);
+        //
+        pthread_attr_destroy(&attr);
+    }
     //
     return true;
-}
-
-void ap_stop()
-{
-    if(wlan && wlan->ap_run)
-    {
-        system(SHELL_HOSTAPD_STOP);
-        wlan->ap_run = false;
-    }
 }
 
