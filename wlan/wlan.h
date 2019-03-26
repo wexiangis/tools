@@ -57,8 +57,8 @@ int wifi_connect(char *ssid, char *key);
 void wifi_disconnect(void);
 
 Wlan_Status *wifi_status(void);
-int wifi_signal(void);//返回-33dbm 0表示失败或没有信号
-int wifi_signalPower(void);//使用0~100来表示强度
+int wifi_signal(void);//使用0~100来表示强度
+int wifi_signalPower(void);//返回-33dbm 0表示失败或没有信号
 
 void wifi_exit(void);
 void wifi_init(void);
@@ -73,7 +73,8 @@ typedef struct WlanApList{
 	struct WlanApList *next;
 }WlanAp_List;
 //获取接入设备
-WlanAp_List *ap_list(int *total);
+WlanAp_List *ap_list(int *total);//用完记得释放
+void ap_list_release(WlanAp_List *list);
 // network_dev : 为热点提供上网源的网络设备,例如 eth0 ppp0
 bool ap_start(char *name, char *key, char *network_dev);
 void ap_stop();

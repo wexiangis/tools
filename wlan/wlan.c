@@ -145,7 +145,6 @@ typedef struct{
 
     //----- ap -----
     struct wpa_ctrl *ctrl_ap[2]; // wpa_ctrl_open("/var/run/hostapd/wlan0"); 获得
-    WlanAp_List *list;
     bool ap_run;
 
     //----- p2p -----
@@ -563,7 +562,7 @@ Wlan_Status *wifi_status(void)
 }
 
 //
-int wifi_signal(void)
+int wifi_signalPower(void)
 {
     if(!WIFI_ASSERT())
         return 0;
@@ -580,9 +579,9 @@ int wifi_signal(void)
     return sig;
 }
 
-int wifi_signalPower(void)
+int wifi_signal(void)
 {
-    int sig = wifi_signal();
+    int sig = wifi_signalPower();
     //=
     if(sig > -30) sig = 100;
     else if(sig < -130) sig = 0;
@@ -753,6 +752,18 @@ int ap_through(char *rsp, size_t rspLen, char *cmd, ...)
     return wlan_request(wlan->ctrl_ap[0], buff, strlen(buff), rsp, rspLen);
 }
 
+//
+void ap_list_release(WlanAp_List *list)
+{
+    WlanAp_List *current = list, *next;
+    while(current)
+    {
+        next = current->next;
+        free(current);
+        current = next;
+    }
+}
+
 WlanAp_List *ap_list(int *total)
 {
     if(!wlan || !wlan->ap_run)
@@ -760,19 +771,12 @@ WlanAp_List *ap_list(int *total)
     //
     char rsp[RSP_LEN] = {0}, *p;
     int ret, count = 0;
-    WlanAp_List *current = wlan->list, *next;
-    //清空
-    while(current)
-    {
-        next = current->next;
-        free(current);
-        current = next;
-    }
+    WlanAp_List *next, *list = NULL;
     //
     if((ret = ap_through(rsp, RSP_LEN, "STA-FIRST")) > 11 && 
         (p = strstr(rsp, "connected_time=")))
     {
-        wlan->list = next = (WlanAp_List *)calloc(1, sizeof(WlanAp_List));
+        list = next = (WlanAp_List *)calloc(1, sizeof(WlanAp_List));
         sscanf(rsp, "%s", next->addr);
         sscanf(p+15, "%d", &next->time);
         count++;
@@ -794,7 +798,7 @@ WlanAp_List *ap_list(int *total)
     if(total)
         *total = count;
     //
-    return wlan->list;
+    return list;
 }
 
 void ap_stop()
