@@ -582,7 +582,10 @@ int wifi_signalPower(void)
 int wifi_signal(void)
 {
     int sig = wifi_signalPower();
-    //=
+    //
+    if(sig == 0)
+        return sig;
+    //
     if(sig > -30) sig = 100;
     else if(sig < -130) sig = 0;
     else sig = sig + 130;
