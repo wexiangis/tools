@@ -69,7 +69,7 @@ bool duplex_popen(DuplexPipe *dp, char *cmd)
     dp->pid = pid;
     dp->run = true;
 
-    // printf("duplex_popen : %d\n", dp->pid);
+    // fprintf(stdout, "duplex_popen : %d\n", dp->pid);
 
     return true;
 }
@@ -84,7 +84,7 @@ void duplex_pclose(DuplexPipe *dp)
         close(dp->fr); dp->fr = 0;
         close(dp->fw); dp->fw = 0;
 
-        // printf("duplex_pclose : %d\n", dp->pid);
+        // fprintf(stdout, "duplex_pclose : %d\n", dp->pid);
 
         dp->pid = 0;
     }
@@ -92,11 +92,75 @@ void duplex_pclose(DuplexPipe *dp)
 
 //========== wlan ==========
 
+// \xXX 转 ascii 例如: \xff 转 255
+void _wlan_ascii_to_utf8(unsigned char *in, unsigned char *out)
+{
+    if(!strstr((char*)in, "\\x"))
+        return;
+    //
+    for(; *in; in++, out++)
+    {
+        if(*in == '\\' && *(in+1) == 'x')
+        {
+            in += 2;
+            //
+            if(*in >= 'a')
+                *out = *in - 'a' + 10;
+            else if(*in >= 'A')
+                *out = *in - 'A' + 10;
+            else if(*in >= '0')
+                *out = *in - '0';
+            //
+            in += 1;
+            *out *= 16;
+            //
+            if(*in >= 'a')
+                *out += *in - 'a' + 10;
+            else if(*in >= 'A')
+                *out += *in - 'A' + 10;
+            else if(*in >= '0')
+                *out += *in - '0';
+        }
+        else
+            *out = *in;
+    }
+    *out = 0;
+}
+
+// ascii 转 \xXX 例如: 255 转 \xff
+void _wlan_utf8_to_ascii(unsigned char *in, unsigned char *out)
+{
+    unsigned char temp;
+    //
+    for(; *in; in++)
+    {
+        if(*in > 127)
+        {
+            *out++ = '\\';
+            *out++ = 'x';
+            //
+            temp = *in/16;
+            if(temp > 9)
+                *out++ = (temp - 9) + 'a';
+            else
+                *out++ = temp + '0';
+            //
+            temp = *in%16;
+            if(temp > 9)
+                *out++ = (temp - 9) + 'a';
+            else
+                *out++ = temp + '0';
+        }
+        else
+            *out++ = *in;
+    }
+}
+
 #define SHELL_WPA_SUPPLICANT_START \
 "#!/bin/sh\n"\
 "if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
 "then\n"\
-"    echo \"wpa_supplicant is already running\"\n"\
+"    echo \"wpa_supplicant is running\"\n"\
 "else\n"\
 "   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
 "       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
@@ -115,7 +179,7 @@ void duplex_pclose(DuplexPipe *dp)
 "#!/bin/sh\n"\
 "if ps | grep -v grep | grep udhcpc > /dev/null\n"\
 "then\n"\
-"    echo \"udhcpc is already running\"\n"\
+"    echo \"udhcpc is running\"\n"\
 "else\n"\
 "    udhcpc -i wlan0 > /dev/null &\n"\
 "fi\n"
@@ -151,6 +215,7 @@ typedef struct{
 
     //
     Wlan_Status status;
+    bool busy;
 }Wlan_Struct;
 
 static Wlan_Struct *wlan = NULL;
@@ -158,7 +223,7 @@ static Wlan_Struct *wlan = NULL;
 //cmd request callback
 void _wlan_callback(char *msg, size_t len)
 {
-    printf("_wlan_callback: %d\n%s\n", len, msg);
+    fprintf(stdout, "_wlan_callback: %d\n%s\n", len, msg);
 }
 
 //返回回复数据的长度
@@ -166,17 +231,27 @@ int wlan_request(struct wpa_ctrl *ctrl, char *cmd, int cmdLen, char *rsp, size_t
 {
     if(!wlan || !ctrl || !cmd || !rsp || !rspLen)
         return 0;
-    // printf(">%s\n", cmd);
+    
+    //----- 禁止并行指令发收 -----
+    char timeout = 0;
+    while(wlan->busy && timeout++ < 50)
+        wlan_delay_ms(10);
+    wlan->busy = true;
+    //----- 禁止并行指令发收 -----
+
+    // fprintf(stdout, ">%s\n", cmd);
     size_t retLen = rspLen;
     if(wpa_ctrl_request(ctrl, cmd, cmdLen, rsp, &retLen, (void*)&_wlan_callback) == 0)
     {
-        // printf("%s\n", rsp);
+        wlan->busy = false;
+        // fprintf(stdout, "%s\n", rsp);
         if(retLen)
             return retLen;
         else
             return 0;
     }
     //
+    wlan->busy = false;
     return 0;
 }
 
@@ -201,15 +276,15 @@ void _wlan_recv_thr(struct wpa_ctrl *ctrl)
             memset(rsp, 0, RSP_LEN);
             rspLen = RSP_LEN;//要告知对方 rsp 可用范围
             ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
-            if(ret == 0 && rspLen > 0)
-                printf("recv: %d\n%s\n", rspLen, rsp);
+            // if(ret == 0 && rspLen > 0)
+            //     fprintf(stdout, "recv: %d\n%s\n", rspLen, rsp);
             wlan_delay_ms(200);
         }
         //注销监听
         wpa_ctrl_detach(ctrl);
     }
     //
-    printf("_wlan_recv_thr exit ...\n");
+    fprintf(stdout, "_wlan_recv_thr exit ...\n");
 }
 
 int wifi_through(char *rsp, size_t rspLen, char *cmd, ...)
@@ -254,7 +329,7 @@ void _wifi_scan_info_release(WlanScan_Info *info)
 WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
 {
     WlanScan_Info *in = info, *next = NULL, tInfo;
-    char *p, keyType[512];
+    char *p, keyType[512], *p2;
     int i, total = 0;
     if(str)
     {
@@ -278,11 +353,13 @@ WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
                         tInfo.bssid, &tInfo.frq, &tInfo.power, keyType, tInfo.ssid) == 5)
                     {
                         total += 1;
-                        //
+                        //加密方式分类
                         if(strncmp(keyType, "[ESS]", 5) == 0)
                             tInfo.keyType = 0;
                         else
                             tInfo.keyType = 1;
+                        //中文wifi名字处理
+                        _wlan_ascii_to_utf8((unsigned char*)tInfo.ssid, (unsigned char*)tInfo.ssid);
                         //
                         if(!in)
                             next = in = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
@@ -290,11 +367,11 @@ WlanScan_Info *_wifi_scan_info(WlanScan_Info *info, char *str, int *num)
                             next = next->next = (WlanScan_Info *)calloc(1, sizeof(WlanScan_Info));
                         memcpy(next, &tInfo, sizeof(WlanScan_Info));
                         //
-                        // printf("  ssid: %s\n", tInfo.ssid);
-                        // printf("  frq: %d\n", tInfo.frq);
-                        // printf("  power: %d\n", tInfo.power);
-                        // printf("  keyType: %d %s\n", tInfo.keyType, keyType);
-                        // printf("  bssid: %s\n\n", tInfo.bssid);
+                        // fprintf(stdout, "  ssid: %s\n", tInfo.ssid);
+                        // fprintf(stdout, "  frq: %d\n", tInfo.frq);
+                        // fprintf(stdout, "  power: %d\n", tInfo.power);
+                        // fprintf(stdout, "  keyType: %d %s\n", tInfo.keyType, keyType);
+                        // fprintf(stdout, "  bssid: %s\n\n", tInfo.bssid);
                     }
                 }
                 //跳过该行
@@ -391,10 +468,14 @@ void wifi_scanStop(void)
 //比较连接历史,返回id号
 int _wifi_connect_history_fit(char *ssid)
 {
-    char rsp[RSP_LEN] = {0}, name[128];
+    char rsp[RSP_LEN] = {0}, name[256];
+    char ssidHex[256] = {0};
     char *p;
-    int id, len = strlen(ssid);
+    int id, len, i, j;
+    //中文处理
+    _wlan_utf8_to_ascii((unsigned char*)ssid, (unsigned char*)ssidHex);
     //
+    len = strlen(ssidHex);
     if(wlan_request(wlan->ctrl[0], "LIST_NETWORKS", 13, rsp, RSP_LEN) > 0)
     {
         p = rsp;
@@ -403,7 +484,7 @@ int _wifi_connect_history_fit(char *ssid)
             if(*(++p) && sscanf(p, "%d %[^\t]", &id, name) == 2)
             {
                 if(strlen(name) == len &&
-                    strncmp(ssid, name, len) == 0)
+                    strncmp(ssidHex, name, len) == 0)
                     return id;
             }
         }
@@ -415,6 +496,9 @@ int _wifi_connect_history_fit(char *ssid)
 //
 int wifi_connect(char *ssid, char *key)
 {
+    if(!ssid)
+        return -1;
+
     if(!WIFI_ASSERT())
         return -1;
 
@@ -499,7 +583,8 @@ Wlan_Status *wifi_status(void)
     if(!WIFI_ASSERT())
         return NULL;
     //
-    char rsp[RSP_LEN] = {0}, *p;
+    int i;
+    char rsp[RSP_LEN] = {0}, *p, *p2;
     //
     if(wlan_request(wlan->ctrl[0], "STATUS", 6, rsp, RSP_LEN) < 1)
         return NULL;
@@ -512,7 +597,11 @@ Wlan_Status *wifi_status(void)
         //ssid
         memset(wlan->status.ssid, 0, sizeof(wlan->status.ssid));
         if((p = strstr(p, "ssid=")))
+        {
             sscanf(p+5, "%[ -~]", wlan->status.ssid);
+            //中文wifi名字处理
+            _wlan_ascii_to_utf8((unsigned char*)wlan->status.ssid, (unsigned char*)wlan->status.ssid);
+        }
     }
     //ip
     memset(wlan->status.ip, 0, sizeof(wlan->status.ip));
@@ -562,7 +651,7 @@ Wlan_Status *wifi_status(void)
 }
 
 //
-int wifi_signalPower(void)
+int _wifi_signalPower(void)
 {
     if(!WIFI_ASSERT())
         return 0;
@@ -579,9 +668,12 @@ int wifi_signalPower(void)
     return sig;
 }
 
-int wifi_signal(void)
+int wifi_signal(int *power)
 {
-    int sig = wifi_signalPower();
+    int sig = _wifi_signalPower();
+    //
+    if(power)
+        *power = sig;
     //
     if(sig == 0)
         return sig;
@@ -694,9 +786,9 @@ void wifi_init(void)
 "echo 1 > /proc/sys/net/ipv4/ip_forward\n"\
 "ifconfig wlan0 192.168.43.1 netmask 255.255.255.0 up\n"\
 "hostapd /etc/hostapd.conf -B\n"\
-"if ps | grep -v grep | grep udhcpd | grep wlan0 > /dev/null\n"\
+"if ps | grep -v grep | grep udhcpd > /dev/null\n"\
 "then\n"\
-"    echo \"udhcpd is already running\"\n"\
+"    echo \"udhcpd is running\"\n"\
 "else\n"\
 "   udhcpd /etc/udhcpd.conf\n"\
 "fi\n"
@@ -730,15 +822,15 @@ void _wlan_ap_recv_thr(struct wpa_ctrl *ctrl)
             memset(rsp, 0, RSP_LEN);
             rspLen = RSP_LEN;//要告知对方 rsp 可用范围
             ret = wpa_ctrl_recv(ctrl, rsp, &rspLen);
-            if(ret == 0 && rspLen > 0)
-                printf("recv: %d\n%s\n", rspLen, rsp);
+            // if(ret == 0 && rspLen > 0)
+            //     fprintf(stdout, "recv: %d\n%s\n", rspLen, rsp);
             wlan_delay_ms(200);
         }
         //注销监听
         wpa_ctrl_detach(ctrl);
     }
     //
-    printf("_wlan_ap_recv_thr exit ...\n");
+    fprintf(stdout, "_wlan_ap_recv_thr exit ...\n");
 }
 
 int ap_through(char *rsp, size_t rspLen, char *cmd, ...)
@@ -849,21 +941,21 @@ bool ap_start(char *name, char *key, char *network_dev)
         ret = snprintf(buff, 10240, SHELL_HOSTAPD_CONF_CREATE, name, 0, "00000000");
     if(ret < 1 || ret >= 10240)
         return false;
-    // printf("system: 创建文件 hostapd.conf\n%s\n\n", buff);
+    // fprintf(stdout, "system: 创建文件 hostapd.conf\n%s\n\n", buff);
     system(buff);
 
     //检查文件 udhcpd.conf
-    // printf("system: 检查文件 udhcpd.conf\n%s\n\n", SHELL_UDHCPC_CONF_CHECK);
+    // fprintf(stdout, "system: 检查文件 udhcpd.conf\n%s\n\n", SHELL_UDHCPC_CONF_CHECK);
     system(SHELL_UDHCPC_CONF_CHECK);
 
     //启动 hostapd
-    // printf("system: 启动 hostapd\n%s\n\n", SHELL_HOSTAPD_START);
+    // fprintf(stdout, "system: 启动 hostapd\n%s\n\n", SHELL_HOSTAPD_START);
     system(SHELL_HOSTAPD_START);
 
     //网络转发配置
     memset(buff, 0, 10240);
     ret = snprintf(buff, 10240, SHELL_FIREWALL_START, network_dev, network_dev, network_dev);
-    // printf("system: 网络转发配置\n%s\n\n", buff);
+    // fprintf(stdout, "system: 网络转发配置\n%s\n\n", buff);
     system(buff);
 
     //
@@ -891,4 +983,3 @@ bool ap_start(char *name, char *key, char *network_dev)
     //
     return true;
 }
-
