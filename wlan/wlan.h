@@ -1,6 +1,10 @@
 #ifndef __WLAN_H_
 #define __WLAN_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -15,7 +19,6 @@ typedef struct{
 
 bool duplex_popen(DuplexPipe *dp, char *cmd);
 void duplex_pclose(DuplexPipe *dp);
-
 
 //----- wlan -----
 
@@ -57,8 +60,7 @@ int wifi_connect(char *ssid, char *key);
 void wifi_disconnect(void);
 
 Wlan_Status *wifi_status(void);
-int wifi_signal(void);//使用0~100来表示强度
-int wifi_signalPower(void);//返回-33dbm 0表示失败或没有信号
+int wifi_signal(int *power);//返回0~100来表示强度  //power:信号强度 例如-33dbm 0表示失败或没有信号
 
 void wifi_exit(void);
 void wifi_init(void);
@@ -78,5 +80,9 @@ void ap_list_release(WlanAp_List *list);
 // network_dev : 为热点提供上网源的网络设备,例如 eth0 ppp0
 bool ap_start(char *name, char *key, char *network_dev);
 void ap_stop();
+
+#ifdef __cplusplus
+};
+#endif
 
 #endif

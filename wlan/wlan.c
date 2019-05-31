@@ -160,7 +160,7 @@ void _wlan_utf8_to_ascii(unsigned char *in, unsigned char *out)
 "#!/bin/sh\n"\
 "if ps | grep -v grep | grep wpa_supplicant | grep wlan0 > /dev/null\n"\
 "then\n"\
-"    echo \"wpa_supplicant is running\"\n"\
+"    echo \"wpa_supplicant is already running\"\n"\
 "else\n"\
 "   if [ ! -f /etc/wpa_supplicant.conf ] ; then\n"\
 "       echo \"ctrl_interface=/var/run/wpa_supplicant\" > /etc/wpa_supplicant.conf\n"\
@@ -179,7 +179,7 @@ void _wlan_utf8_to_ascii(unsigned char *in, unsigned char *out)
 "#!/bin/sh\n"\
 "if ps | grep -v grep | grep udhcpc > /dev/null\n"\
 "then\n"\
-"    echo \"udhcpc is running\"\n"\
+"    echo \"udhcpc is already running\"\n"\
 "else\n"\
 "    udhcpc -i wlan0 > /dev/null &\n"\
 "fi\n"
@@ -786,9 +786,9 @@ void wifi_init(void)
 "echo 1 > /proc/sys/net/ipv4/ip_forward\n"\
 "ifconfig wlan0 192.168.43.1 netmask 255.255.255.0 up\n"\
 "hostapd /etc/hostapd.conf -B\n"\
-"if ps | grep -v grep | grep udhcpd > /dev/null\n"\
+"if ps | grep -v grep | grep udhcpd | grep wlan0 > /dev/null\n"\
 "then\n"\
-"    echo \"udhcpd is running\"\n"\
+"    echo \"udhcpd is already running\"\n"\
 "else\n"\
 "   udhcpd /etc/udhcpd.conf\n"\
 "fi\n"
@@ -983,3 +983,4 @@ bool ap_start(char *name, char *key, char *network_dev)
     //
     return true;
 }
+
